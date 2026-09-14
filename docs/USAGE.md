@@ -4,7 +4,11 @@ Windows frame-sequential stereo output for NVIDIA 3D Vision glasses. The origina
 USB emitter is driven through WinUSB/libusb and its RAM firmware. Clean stereo over the
 whole screen was confirmed through the glasses on 2026-09-13, on a Samsung OLED at
 4K 240 Hz in HDR with software black frame insertion. Other displays, refresh rates and
-sequences, and stereo in games through the hook, are not optically verified.
+sequences are not optically verified.
+
+> **What works today:** only side-by-side 3D captured from a window (proven with Dolphin).
+> ReShade capture and the in-game hook do not work. geo-11 and games with native stereo 3D
+> have never been tested.
 
 Double-click **Launch.cmd** to run `build/bin/Release/VisionRestoration.exe`.
 
@@ -64,7 +68,7 @@ frame-sequential renderer and emitter timing, with no decorative image overlay.
 **Image alignment** stays beside the preview: convergence shifts the eye images
 horizontally, and scene depth changes the built-in stereo scene's camera separation.
 Both apply live. Diagnostic eye-isolation targets stay fixed.
-**Sources & games** selects stereo images, window capture, Spout or the game hook.
+**Sources & games** selects stereo images, window capture, Spout or the game hook. Only window capture of side-by-side output is proven to work.
 **Profiles** saves named setups; timing and scene changes also autosave.
 **Diagnostics** reports presentation/USB timing and runs checks of the rendered
 pixels. **Advanced** holds per-eye timing, sequences, emitter connection and modes.
@@ -76,7 +80,7 @@ See the [emitter timing fixes](EMITTER-TIMING-FIX.md) and
 
 ## Games (in-game hook)
 
-> **The in-game hook does not work and has never worked.** This section documents the design and code as they stand. To get a game into 3D today, set it to side-by-side output and capture its window, or send it from ReShade with the `VisionStereoSpout` add-on, under **Sources & games**.
+> **The in-game hook does not work and has never worked.** This section documents the design and code as they stand. The only way to get a game into 3D today is to set it to side-by-side output and capture its window under **Sources & games**. ReShade capture does not work either. The geo-11 route below has never been tested.
 
 Leave the app open. A game with the hook installed takes over the glasses automatically and releases them when it exits, the way the NVIDIA driver did. `VisionGameHook.addon64` is a ReShade add-on that runs inside the game: each game frame it presents the profile's whole sequence (Left/Right, Left/Black/Right/Black or Left/Left/Right/Right) on the game's own swap chain, one slot per refresh, and reports DXGI present statistics through shared memory. The app maps those presents to refreshes and times the emitter with the current profile. Nothing is captured.
 

@@ -2,6 +2,18 @@
 
 Recorded 2026-09-08 on this workspace PC; updated 2026-09-12.
 
+## What works, as of 2026-09-14
+
+| Source | State |
+|---|---|
+| Window capture of side-by-side output (Dolphin) | Working through the glasses, 240 Hz OLED |
+| ReShade capture (Spout add-on) | Does not work |
+| In-game hook | Does not work, has never worked |
+| geo-11 | Never tested |
+| Games with native stereo 3D | Never tested |
+
+Entries below that call the hook or ReShade paths built, installed or passing tests describe software checks only. None of them is proof that those paths work.
+
 **Hardware change 2026-09-12:** the original NVIDIA emitter and glasses have arrived; the RP2040 board has not. The original NVIDIA backend is the active path. Plugged in with no driver, Windows shows `USB\VID_0955&PID_7003` "NVIDIA stereo controller", problem code 28. libusb (and therefore the app's probe) does not list a driverless device. The app now accepts `0955:7003` as the boot-state identity; runtime commands still require the `0955:0007` endpoint layout after firmware upload. Blockers before the first optical test: bind WinUSB to the emitter with Zadig (not installed on this PC), and obtain `nvstusb.sys` for RAM firmware extraction. Done 2026-09-12: the user supplied the standalone NV3DVisionUSB package (driver 6.14.13.9041, nvstusb64.sys); `vision_firmware.exe` extracted 7026 bytes, identical from the 32- and 64-bit .sys, to `STUFF/emitter.fw` (sha256 7348cfd7...). The NVIDIA driver was NOT installed and will not be; the app uploads this RAM image over WinUSB itself, independent of the GPU driver. Rebuilt 2026-09-12; all four CTest suites pass. **USB milestone reached 2026-09-12:** WinUSB bound to 7003 and 0007 via Zadig; `--emitter-check STUFF/emitter.fw` uploaded the RAM image; an elevated `pnputil /restart-device` re-enumerated the emitter as 0955:0007; `--emitter-check` then reported State Ready with the EP1/EP2 layout claimed (`reports/emitter-check.txt`). `--emitter-check --emitter-pulse` then drove 1200 alternating eye commands at 120 Hz with 0 errors and the user saw the glasses shutter. `--live 15` (headless fullscreen presenter on the G80SD, SDR) reached 119.993 Hz measured, 1728 presents, 1 miss, timing locked, 1718 emitter commands, 0 errors; `--live 10 --hdr` (FP16 scRGB surface) likewise locked at 119.996 Hz with 1120 commands. Earlier 60 Hz results were caused by a RivaTuner Statistics Server 60 fps cap on this PC, not the app; keep RTSS off or exclude VisionRestoration.exe. Swap chain now uses 3 buffers. The GUI auto-connects a runtime NVIDIA emitter at startup and defaults Preview off when one is present. Optical quality (eye mapping, phase, ghosting) is the next step and is judged by the user. Hisense was not connected during this session (G80SD and a Dell S3220DGF were).
 
 **Hardware change:** glasses received without the original emitter. RP2040-Zero, Adafruit IR module and STEMMA cable are ordered. The original protocol/scheduler, Windows RP2040 backend, predictive presenter integration and ARM PIO/USB firmware are now built. Hardware behavior is untested. Follow the [firmware build/arrival guide](../firmware/rp2040/README.md); original-emitter steps below are historical/optional.
@@ -164,7 +176,7 @@ Evidence: `build/Testing/Temporary/LastTest.log`, `reports/gpu-test.txt`, `repor
 | 2 — Real emitter | Original NVIDIA emitter: USB binding, RAM firmware load, re-enumeration and runtime claim verified 2026-09-12. Shutter activity pending. RP2040 path built, hardware not arrived. |
 | 3 — G80SD 120 Hz | Live mode detected; optical calibration and ten-minute stability test pending at 120 Hz. The confirmed clean configuration on this display is 240 Hz (milestone 6). |
 | 4 — Hisense 120 Hz | Display detected at 143.988 Hz; explicit 120 Hz selection and independent optical calibration pending. |
-| 5 — Live inputs | In-game hook (ReShade add-on + shared-memory sync) built and installed for Dolphin; first run pending. Capture/Spout paths kept but not the intended game route. |
+| 5 — Live inputs | Window capture of side-by-side output works (Dolphin). ReShade capture and the in-game hook do not work. geo-11 and native stereo games never tested. |
 | 6 — Higher refresh | G80SD at 4K 240 Hz with Left/Black/Right/Black confirmed clean over the whole screen by the user, 2026-09-13. Left/Left/Right/Right and 144 Hz physical results still unverified. |
 
 ## Next session with the emitter

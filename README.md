@@ -6,8 +6,12 @@ Vision Restoration talks to the emitter directly and shows frame-sequential 3D i
 
 > **Status: personal project, proof of concept.** There is no release.
 >
-> - **Working:** side-by-side 3D that is captured into the app, from a game window, a side-by-side video or ReShade, on a **240 Hz OLED monitor**.
-> - **Not working yet:** the in-game hook has never worked. LCD, QLED and Mini-LED displays show ghosting and crosstalk. Nothing else has been proven.
+> - **The only thing that works:** side-by-side 3D captured from a window into the app, on a **240 Hz OLED monitor**. It was proven with Dolphin set to side-by-side output.
+> - **Does not work:** ReShade capture and the in-game hook.
+> - **Never tested:** geo-11, and games with their own native stereo 3D.
+> - **Not working yet:** LCD, QLED and Mini-LED displays show ghosting and crosstalk.
+>
+> Everything other than side-by-side window capture is future work. None of it has been proven.
 
 ## What works today
 
@@ -15,14 +19,14 @@ Vision Restoration talks to the emitter directly and shows frame-sequential 3D i
 
 | Source | Status |
 |---|---|
-| Window capture of a game rendering side-by-side 3D (proven with Dolphin set to side-by-side) | Working |
-| Window capture of any side-by-side 3D video | Working |
-| ReShade capture: the `VisionStereoSpout` ReShade add-on sends the game's side-by-side frames to the app over Spout | Working |
-| In-game hook (`VisionGameHook`, `adapters/vision_hook.cpp`) | **Broken, has never worked** |
-| geo-11 | Untested |
-| Games with native stereo 3D, DirectX 9 / 10, Vulkan | Not started |
+| Window capture of side-by-side 3D output (proven with Dolphin set to side-by-side) | **Working.** The only proven source |
+| ReShade capture (`VisionStereoSpout` add-on sending frames over Spout) | **Does not work** |
+| In-game hook (`VisionGameHook`, `adapters/vision_hook.cpp`) | **Does not work, has never worked** |
+| geo-11 | **Never tested** |
+| Games with native stereo 3D (old 3D Vision titles, games with their own stereo mode) | **Never tested.** Unknown whether they work |
+| DirectX 9 / 10, Vulkan | Not started |
 
-Only side-by-side input works: the game or video has to produce its own left and right images. Vision Restoration does not add 3D to games. The goal is not to add support game by game; the plan is one general hook that works across games. That depends on who joins the project.
+Only side-by-side window capture works: the game has to produce its own left and right images side by side in a window. Vision Restoration does not add 3D to games. The goal is not to add support game by game; the plan is one general hook that works across games. That depends on who joins the project.
 
 ### Displays
 
@@ -49,7 +53,7 @@ The glasses close each lens while the other eye's image is shown. That only look
 - NVIDIA 3D Vision or 3D Vision 2 glasses
 - NVIDIA 3D Vision USB IR emitter
 - A 240 Hz OLED monitor (the only display type proven so far)
-- A game or video that outputs side-by-side 3D
+- A game that outputs side-by-side 3D in a window
 - Visual Studio 2022 (Desktop development with C++), the Windows SDK and CMake 3.24+ to build it
 - Your own copy of NVIDIA's 3D Vision USB driver package, for the emitter firmware. It is proprietary and not included.
 
@@ -104,10 +108,12 @@ Only these two emitter IDs get WinUSB. Don't install NVIDIA's 3D Vision driver o
 3. Turn on **Software black frame insertion** and use **Maximize brightness**.
 4. Adjust **Phase** and **Shutter** until each eye sees only its own image.
 
-### 5. Show a game or video in 3D
+### 5. Show a game in 3D
 
-1. Set the game or video player to output **side-by-side** 3D (in Dolphin: Graphics > Stereoscopic 3D Mode = Side-by-Side).
-2. In **Sources & games**, pick its window with window capture, or install the `VisionStereoSpout.addon64` ReShade add-on in the game and pick its Spout sender.
+1. Set the game to output **side-by-side** 3D in a window (in Dolphin: Graphics > Stereoscopic 3D Mode = Side-by-Side).
+2. In **Sources & games**, pick its window with window capture.
+
+Window capture is the only source proven to work. The ReShade Spout add-on and the in-game hook are in the app and the source tree, but neither works today.
 
 Every control is explained in [docs/USAGE.md](docs/USAGE.md). Emitter details and troubleshooting are in [docs/EMITTER.md](docs/EMITTER.md).
 
@@ -122,7 +128,10 @@ Self tests that need no emitter:
 
 - [x] Original emitter control without the NVIDIA stereo driver
 - [x] Clean full-screen 3D through the glasses on a 240 Hz OLED (black frame insertion, SDR and HDR)
-- [x] Side-by-side capture from a window or through ReShade
+- [x] Side-by-side capture from a window (proven with Dolphin)
+- [ ] ReShade capture (built, does not work)
+- [ ] geo-11 (never tested)
+- [ ] Games with native stereo 3D (never tested)
 - [ ] LCD, QLED and Mini-LED displays without ghosting and crosstalk
 - [ ] Other refresh rates proven (100, 120, 144 Hz)
 - [ ] A working general in-game hook, instead of per-game support
@@ -141,7 +150,7 @@ Self tests that need no emitter:
 
 ## Contributing
 
-This is a personal project built for one setup, published to show that the 3D Vision USB emitter can be unlocked for other monitors and newer graphics cards. Where it goes next depends on who jumps in. Help is most useful on LCD/QLED crosstalk, a general in-game hook, and testing on other GPUs and displays.
+This is a personal project built for one setup, published to show that the 3D Vision USB emitter can be unlocked for other monitors and newer graphics cards. Where it goes next depends on who jumps in. Help is most useful on LCD/QLED crosstalk, a general in-game hook, ReShade capture, native stereo games, and testing on other GPUs and displays.
 
 Bug reports help most when they include your display model, refresh rate, GPU and `reports/session.log`.
 

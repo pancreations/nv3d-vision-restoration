@@ -1,3 +1,5 @@
+> **Status 2026-09-14:** nothing in this folder works. The in-game hook (`VisionGameHook`) has never worked, and ReShade capture (`VisionStereoSpout`) does not work. The notes below are development history, including results that were only software checks. The only proven way to show a game in 3D is window capture of side-by-side output.
+
 # Direct3D 12 and depth-based stereo (GTA V Enhanced) — 2026-09-14
 
 The user asked for GTA V Enhanced in 3D. The game is Direct3D 12 only and renders one camera, and no Direct3D 12 two-camera stereo driver exists (geo-11 is Direct3D 11 only). The options offered were alternate-eye rendering, depth-based stereo, or GTA V Legacy with geo-11. The user chose depth-based stereo, which keeps the DLSS 5 Neural Rendering mod working.
