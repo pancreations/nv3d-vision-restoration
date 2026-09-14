@@ -1,0 +1,23 @@
+{
+  "pico_sdk": {
+    "version": "2.2.0",
+    "url": "https://codeload.github.com/raspberrypi/pico-sdk/zip/refs/tags/2.2.0",
+    "archive": "third_party/pico-sdk-2.2.0.zip",
+    "sha256": "848AFC05F3AF55E475A083F2D0533AC3C845341EB4EA6A35ACF77A0897BE3F3C",
+    "license": "BSD-3-Clause; see SDK LICENSE.TXT and component notices"
+  },
+  "tinyusb": {
+    "revision": "86ad6e56c1700e85f1c5678607a762cfe3aa2f47",
+    "url": "https://codeload.github.com/hathach/tinyusb/zip/86ad6e56c1700e85f1c5678607a762cfe3aa2f47",
+    "archive": "third_party/tinyusb-pico-2.2.0.zip",
+    "sha256": "3011C90C128988012B553E5D2F0A90BC0B64046591C964BC1F9F6659EDCD7E4B",
+    "license": "MIT; see TinyUSB LICENSE"
+  },
+  "arm_gnu_toolchain": {
+    "version": "14.3.Rel1 (GCC 14.3.1)",
+    "url": "https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-mingw-w64-x86_64-arm-none-eabi.zip",
+    "archive": "third_party/arm-toolchain-14.3.zip",
+    "sha256": "864C0C8815857D68A1BBBA2E5E2782255BB922845C71C97636004A3D74F60986",
+    "license": "Multiple toolchain/runtime licenses; retain bundled share/doc notices and GCC runtime exception"
+  }
+}

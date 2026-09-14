@@ -1,0 +1,17 @@
+/build/
+/dist/
+/profiles/*.ini
+/reports/
+*.fw
+*.sys
+imgui.ini
+__pycache__/
+
+# Third-party dependencies are not redistributed; tools/Get-Dependencies.ps1 downloads them
+/third_party/
+
+# Local-only: footage, extracted NVIDIA files, test copies of games
+/Footage240fps/
+/STUFF/
+/experiments/
+/$null

@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vision Restoration</title>
+<meta name="description" content="Bring NVIDIA 3D Vision glasses back to life on modern Windows PCs. No discontinued 3D Vision driver, no GPU driver downgrade.">
+<style>
+  :root {
+    --bg: #0c0d10; --panel: #15171c; --line: #262a33; --text: #e8e9ec; --muted: #9ba1ad;
+    --accent: #76b900; --left: #ff4d5e; --right: #38d6e8; --code: #0f1115;
+    --maxw: 60rem;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; padding-inline: 1.25rem; color: var(--text); background: var(--bg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--right); }
+  .wrap { max-width: var(--maxw); margin: 0 auto; }
+  header.hero { padding-block: 4.5rem 3rem; border-bottom: 1px solid var(--line); }
+  .eyebrow { color: var(--muted); letter-spacing: .12em; text-transform: uppercase; font-size: .8rem; margin: 0 0 1rem; }
+  h1 {
+    font-size: clamp(2.4rem, 7vw, 4.2rem); line-height: 1.05; margin: 0 0 1.25rem; font-weight: 800;
+    text-shadow: -3px 0 0 rgba(255, 77, 94, .55), 3px 0 0 rgba(56, 214, 232, .55);
+  }
+  .lede { font-size: 1.2rem; color: var(--text); max-width: 42rem; margin: 0 0 2rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+  .btn {
+    display: inline-block; padding: .7rem 1.15rem; border-radius: .5rem; font-weight: 600; text-decoration: none;
+    border: 1px solid var(--line); color: var(--text); background: var(--panel);
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #0c0d10; }
+  .status {
+    margin-top: 2rem; padding: .9rem 1.1rem; border-left: 3px solid var(--accent); background: var(--panel);
+    border-radius: 0 .5rem .5rem 0; color: var(--muted); max-width: 42rem;
+  }
+  .status strong { color: var(--text); }
+  section { padding-block: 3rem; border-bottom: 1px solid var(--line); }
+  h2 { font-size: 1.6rem; margin: 0 0 1.5rem; }
+  h3 { font-size: 1.1rem; margin: 0 0 .5rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: .6rem; padding: 1.1rem 1.2rem; }
+  .card p { margin: 0; color: var(--muted); }
+  ol.steps { list-style: none; padding: 0; margin: 0; counter-reset: step; display: grid; gap: 1.25rem; }
+  ol.steps > li { counter-increment: step; position: relative; padding-left: 3.25rem; }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: .1rem; width: 2.2rem; height: 2.2rem; border-radius: 50%;
+    display: grid; place-items: center; font-weight: 700; background: var(--panel); border: 1px solid var(--line);
+  }
+  ol.steps p, ol.steps ul { margin: .25rem 0 .6rem; color: var(--muted); }
+  ol.steps ul { padding-left: 1.2rem; }
+  pre {
+    background: var(--code); border: 1px solid var(--line); border-radius: .5rem; padding: .9rem 1rem;
+    overflow-x: auto; margin: .5rem 0 .75rem; font-size: .9rem; line-height: 1.5;
+  }
+  code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  p code, li code { background: var(--panel); border: 1px solid var(--line); border-radius: .3rem; padding: 0 .3rem; font-size: .9em; color: var(--text); }
+  .warn { color: var(--text) !important; }
+  .warn strong { color: var(--left); }
+  ul.req { columns: 2 18rem; padding-left: 1.2rem; color: var(--muted); margin: 0; }
+  ul.req li { break-inside: avoid; margin-bottom: .4rem; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 30rem; }
+  th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: .9rem; }
+  .pill { font-size: .8rem; padding: .1rem .5rem; border-radius: 1rem; border: 1px solid var(--line); white-space: nowrap; }
+  .pill.progress { color: var(--accent); border-color: var(--accent); }
+  .docs { display: flex; flex-wrap: wrap; gap: .6rem; }
+  footer { padding-block: 2.5rem 3rem; color: var(--muted); font-size: .9rem; }
+  footer p { margin: 0 0 .5rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <p class="eyebrow">Open source &middot; Windows 10 / 11</p>
+  <h1>Vision Restoration</h1>
+  <p class="lede">Bring NVIDIA 3D Vision glasses back to life on modern Windows PCs. No discontinued 3D Vision driver, no GPU driver downgrade. Just the original emitter, your glasses and a high-refresh display.</p>
+  <div class="actions">
+    <a class="btn primary" href="#install">Install guide</a>
+    <a class="btn" data-repo="" href="#">Source code on GitHub</a>
+  </div>
+  <p class="status"><strong>Early development.</strong> There is no release yet. Clean full-screen stereo has been confirmed through the glasses on a 4K 240&nbsp;Hz OLED. Game support is in progress.</p>
+</header>
+
+<section>
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card"><h3>Original emitter, no NVIDIA driver</h3><p>Talks to the 3D Vision USB IR emitter over WinUSB and uploads its firmware itself. Your current GPU driver stays untouched.</p></div>
+    <div class="card"><h3>High-refresh output</h3><p>100, 120, 144 and 240&nbsp;Hz, SDR and HDR, with black frame insertion for clean eye separation on modern panels.</p></div>
+    <div class="card"><h3>Live timing controls</h3><p>Phase, shutter width, phase sweep and eye swap while you watch through the glasses. Saved per display.</p></div>
+    <div class="card"><h3>Stereo sources</h3><p>Built-in test scene, stereo image pairs, window capture, Spout and a Blender viewport add-on.</p></div>
+    <div class="card"><h3>In-game hook</h3><p>Syncs the glasses to a game's own frames: side-by-side Direct3D 11 games such as Dolphin, and depth-based 3D for Direct3D 12 games.</p></div>
+    <div class="card"><h3>Diagnostics</h3><p>Live vblank jitter, present timing and emitter command timing, plus self tests that need no hardware.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>What you need</h2>
+  <ul class="req">
+    <li>Windows 10 or 11, 64-bit</li>
+    <li>NVIDIA 3D Vision or 3D Vision 2 glasses</li>
+    <li>NVIDIA 3D Vision USB IR emitter</li>
+    <li>A display at 100&nbsp;Hz or higher (240&nbsp;Hz OLED recommended)</li>
+    <li>Visual Studio 2022 with <em>Desktop development with C++</em>, and CMake 3.24+</li>
+    <li>Your own copy of NVIDIA's 3D Vision USB driver package (for the emitter firmware)</li>
+  </ul>
+</section>
+
+<section id="install">
+  <h2>Install and set up the emitter</h2>
+  <p style="color:var(--muted);margin-top:-.75rem">There is no release build yet, so installing means building from source. Third-party libraries and NVIDIA's firmware are not part of this project. You download them yourself from their official sources.</p>
+  <ol class="steps">
+    <li>
+      <h3>Build the app</h3>
+<pre><code>git clone <span data-repo-text>&lt;repository URL&gt;</span>.git
+cd nv3d-vision-restoration
+.\tools\Get-Dependencies.ps1
+.\build.ps1</code></pre>
+      <p><code>Get-Dependencies.ps1</code> downloads libusb, Dear ImGui, Spout2 and the ReShade headers from their official releases. The app is built to <code>build\bin\Release\VisionRestoration.exe</code>.</p>
+    </li>
+    <li>
+      <h3>Get the emitter firmware</h3>
+      <p>The emitter has no permanent firmware. The PC uploads it every time it's plugged in, and that firmware lives inside NVIDIA's driver file <code>nvstusb.sys</code>.</p>
+      <ul>
+        <li>Download NVIDIA's <a href="https://www.nvidia.com/en-us/drivers/nv3dvisionusb/390_41/nv3dvisionusb-driver/">3D Vision USB driver 390.41</a> (a GeForce package up to 425.31 also works).</li>
+        <li class="warn"><strong>Don't run the installer.</strong> Open the package with <a href="https://www.7-zip.org/">7-Zip</a> and copy <code>nvstusb.sys</code> out of the <code>NV3DVisionUSB.Driver</code> folder.</li>
+      </ul>
+<pre><code>.\build\bin\Release\vision_firmware.exe C:\path\to\nvstusb.sys .\build\bin\Release\emitter.fw</code></pre>
+    </li>
+    <li>
+      <h3>Give the emitter the WinUSB driver</h3>
+      <ul>
+        <li>Plug the emitter straight into the PC. Device Manager lists it as <strong>NVIDIA stereo controller</strong> (<code>USB\VID_0955&amp;PID_7003</code>) with no driver.</li>
+        <li>Run <a href="https://zadig.akeo.ie/">Zadig</a>, choose <em>Options &gt; List All Devices</em>, select <strong>NVIDIA stereo controller</strong> (USB ID <code>0955 7003</code>), pick <strong>WinUSB</strong> and click <em>Install Driver</em>.</li>
+        <li>After the app uploads the firmware, the emitter restarts as USB ID <code>0955 0007</code>. If the app can't open it, repeat the Zadig step for that ID and press <em>Refresh USB</em>.</li>
+      </ul>
+    </li>
+    <li>
+      <h3>Run and calibrate</h3>
+      <ul>
+        <li>Run <code>Launch.cmd</code>.</li>
+        <li>Pick your display and refresh rate, click <em>Match output rate</em>, then <em>Start 3D preview</em>. The glasses start shuttering.</li>
+        <li>Adjust <em>Phase</em> and <em>Shutter</em> until each eye sees only its own image. On OLEDs, turn on <em>Software black frame insertion</em> and use <em>Maximize brightness</em>.</li>
+      </ul>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <h2>Game support</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Type</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Direct3D 11 games with side-by-side stereo output (Dolphin, geo-11)</td><td><span class="pill progress">In progress</span></td></tr>
+        <tr><td>Direct3D 12 games without stereo, depth-based 3D (GTA V Enhanced)</td><td><span class="pill progress">In progress</span></td></tr>
+        <tr><td>Games with native stereo 3D support</td><td><span class="pill">Planned</span></td></tr>
+        <tr><td>DirectX 9 and 10, and Vulkan</td><td><span class="pill">Planned</span></td></tr>
+        <tr><td>Stereo mods for games without built-in 3D</td><td><span class="pill">Planned</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Documentation</h2>
+  <div class="docs">
+    <a class="btn" href="USAGE.html">Usage</a>
+    <a class="btn" href="EMITTER.html">Emitter</a>
+    <a class="btn" href="TIMING-CALIBRATION.html">Timing calibration</a>
+    <a class="btn" href="FULLSCREEN-120HZ.html">Full screen at 120&nbsp;Hz</a>
+    <a class="btn" href="RP2040.html">DIY RP2040 emitter</a>
+    <a class="btn" href="STATUS.html">Development status</a>
+  </div>
+</section>
+
+<footer>
+  <p>Licensed under <a data-repo="/blob/main/LICENSE" href="#">GPL-3.0-or-later</a>. NVIDIA firmware is not included and is not covered by this license. Third-party components are credited in <a data-repo="/blob/main/THIRD_PARTY_NOTICES.md" href="#">THIRD_PARTY_NOTICES.md</a>.</p>
+  <p>Not affiliated with or endorsed by NVIDIA. "3D Vision" is a trademark of NVIDIA Corporation.</p>
+</footer>
+
+</div>
+<script>
+  // A project page lives at https://OWNER.github.io/REPO/, so the repository is https://github.com/OWNER/REPO.
+  (function () {
+    var owner = location.hostname.split('.')[0], name = location.pathname.split('/')[1];
+    if (!/\.github\.io$/.test(location.hostname) || !name) return;
+    var repo = 'https://github.com/' + owner + '/' + name;
+    document.querySelectorAll('[data-repo]').forEach(function (a) { a.href = repo + a.getAttribute('data-repo'); });
+    document.querySelectorAll('[data-repo-text]').forEach(function (s) { s.textContent = repo; });
+  })();
+</script>
+</body>
+</html>

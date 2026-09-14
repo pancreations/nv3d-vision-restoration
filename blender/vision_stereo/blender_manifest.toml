@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "vision_stereo"
+version = "1.1.0"
+name = "Vision Stereo"
+tagline = "Blender's 3D viewport on 3D Vision glasses"
+maintainer = "Vision Restoration"
+type = "add-on"
+
+blender_version_min = "5.1.0"
+license = ["SPDX:GPL-3.0-or-later"]
+platforms = ["windows-x64"]
