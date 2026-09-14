@@ -76,6 +76,8 @@ See the [emitter timing fixes](EMITTER-TIMING-FIX.md) and
 
 ## Games (in-game hook)
 
+> **The in-game hook does not work and has never worked.** This section documents the design and code as they stand. To get a game into 3D today, set it to side-by-side output and capture its window, or send it from ReShade with the `VisionStereoSpout` add-on, under **Sources & games**.
+
 Leave the app open. A game with the hook installed takes over the glasses automatically and releases them when it exits, the way the NVIDIA driver did. `VisionGameHook.addon64` is a ReShade add-on that runs inside the game: each game frame it presents the profile's whole sequence (Left/Right, Left/Black/Right/Black or Left/Left/Right/Right) on the game's own swap chain, one slot per refresh, and reports DXGI present statistics through shared memory. The app maps those presents to refreshes and times the emitter with the current profile. Nothing is captured.
 
 The hook handles two kinds of game:

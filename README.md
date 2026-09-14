@@ -1,41 +1,67 @@
-# Vision Restoration
+# NV3D Vision Restoration Project
 
-Bring NVIDIA 3D Vision glasses back to life on modern Windows PCs. No discontinued NVIDIA 3D Vision driver, no GPU driver downgrade.
+An open project, and a proof of concept: NVIDIA 3D Vision glasses and the original 3D Vision USB IR emitter working on a modern monitor and graphics card, without NVIDIA's discontinued 3D Vision driver.
 
-Vision Restoration drives the original 3D Vision USB IR emitter directly and shows frame-sequential stereo on today's high-refresh displays. The goal is to play stereo 3D games again, the way 3D Vision used to.
+Vision Restoration talks to the emitter directly and shows frame-sequential 3D itself. It uses standard Windows display APIs (Direct3D 11 / DXGI) instead of NVIDIA's stereo driver, so in theory it can work with any graphics card, not only NVIDIA ones. So far it has only been tested with an NVIDIA GPU.
 
-> **Status: early development.** There is no release yet. Clean full-screen stereo has been confirmed through the glasses on a 4K 240 Hz OLED. Game support is in progress.
+> **Status: personal project, proof of concept.** There is no release.
+>
+> - **Working:** side-by-side 3D that is captured into the app, from a game window, a side-by-side video or ReShade, on a **240 Hz OLED monitor**.
+> - **Not working yet:** the in-game hook has never worked. LCD, QLED and Mini-LED displays show ghosting and crosstalk. Nothing else has been proven.
+
+## What works today
+
+### 3D sources
+
+| Source | Status |
+|---|---|
+| Window capture of a game rendering side-by-side 3D (proven with Dolphin set to side-by-side) | Working |
+| Window capture of any side-by-side 3D video | Working |
+| ReShade capture: the `VisionStereoSpout` ReShade add-on sends the game's side-by-side frames to the app over Spout | Working |
+| In-game hook (`VisionGameHook`, `adapters/vision_hook.cpp`) | **Broken, has never worked** |
+| geo-11 | Untested |
+| Games with native stereo 3D, DirectX 9 / 10, Vulkan | Not started |
+
+Only side-by-side input works: the game or video has to produce its own left and right images. Vision Restoration does not add 3D to games. The goal is not to add support game by game; the plan is one general hook that works across games. That depends on who joins the project.
+
+### Displays
+
+The glasses close each lens while the other eye's image is shown. That only looks clean if the screen has fully switched from one eye's image to the other before the lens opens, so the display's pixel response time decides whether it works.
+
+| Display | Status |
+|---|---|
+| OLED at 240 Hz, with software black frame insertion (SDR and HDR) | **Proven:** clean full-screen 3D through the glasses |
+| OLED at 100, 120 or 144 Hz | Not proven |
+| LCD, QLED, Mini-LED | **Not working yet.** Their slower pixel response leaves part of the other eye's image on screen, which shows up as ghosting and crosstalk. Being worked on. |
 
 ## Features
 
-- **Original emitter support:** talks to the NVIDIA 3D Vision USB emitter over WinUSB/libusb and uploads its firmware itself. The NVIDIA stereo driver is never installed.
-- **Works with current GPU drivers:** nothing is replaced, patched or downgraded.
-- **High-refresh output:** 100, 120, 144 and 240 Hz, with Left/Black/Right/Black (black frame insertion) for clean separation on modern panels.
-- **SDR and HDR**
-- **Live timing controls:** phase, shutter width, phase sweep and eye swap.
-- **Stereo sources:** built-in test scene, stereo image pairs, window capture and Spout.
-- **In-game hook:** syncs the glasses to a game's own frames. Direct3D 11 games that render both eyes (tested with Dolphin), and Direct3D 12 games that render one camera through depth-based 3D from the game's own depth buffer (built for GTA V Enhanced, not yet tested in the game).
-- **Profiles:** timing is saved per display and autosaved.
-- **Diagnostics:** live vblank jitter, present timing and emitter command timing.
+- **Original emitter, no NVIDIA stereo driver:** drives the 3D Vision USB emitter over WinUSB/libusb and uploads its firmware itself. The GPU driver is not replaced, patched or downgraded.
+- **Frame-sequential output** with software black frame insertion (Left / Black / Right / Black), SDR and HDR.
+- **Live timing controls:** phase, shutter width, phase sweep and eye swap while you look through the glasses.
+- **Calibration aids:** built-in 3D test scene and per-eye test patterns.
+- **Profiles:** timing saved per display and autosaved.
+- **Diagnostics:** vblank jitter, present timing and emitter command timing.
 
 ## Requirements
 
 - Windows 10 or 11 (64-bit)
 - NVIDIA 3D Vision or 3D Vision 2 glasses
-- NVIDIA 3D Vision USB IR emitter (a DIY RP2040-based emitter is also in development)
-- A display running at 100 Hz or higher (a 240 Hz OLED is recommended)
+- NVIDIA 3D Vision USB IR emitter
+- A 240 Hz OLED monitor (the only display type proven so far)
+- A game or video that outputs side-by-side 3D
 - Visual Studio 2022 (Desktop development with C++), the Windows SDK and CMake 3.24+ to build it
-- Emitter firmware extracted from your own copy of NVIDIA's 3D Vision USB driver package. It is proprietary and not included.
+- Your own copy of NVIDIA's 3D Vision USB driver package, for the emitter firmware. It is proprietary and not included.
 
 ## Installing
 
-There is no release build yet, so installing means building from source. Third-party libraries and NVIDIA's firmware are not included in this repository; you download them yourself in the steps below.
+There is no release build, so installing means building from source. Third-party libraries and NVIDIA's firmware are not included in this repository; you download them yourself in the steps below.
 
 ### 1. Build the app
 
 ```powershell
 git clone <URL from the green Code button above>
-cd nv3d-vision-restoration
+cd nv3d-vision-restoration-project
 .\tools\Get-Dependencies.ps1   # downloads libusb, Dear ImGui, Spout2 and the ReShade headers from their official releases
 .\build.ps1
 ```
@@ -73,9 +99,15 @@ Only these two emitter IDs get WinUSB. Don't install NVIDIA's 3D Vision driver o
 
 ### 4. Run and calibrate
 
-1. Run `Launch.cmd`.
+1. Set the monitor to 240 Hz and run `Launch.cmd`.
 2. Pick your display and refresh rate, click **Match output rate**, then **Start 3D preview**. The glasses start shuttering.
-3. Adjust **Phase** and **Shutter** until each eye sees only its own image. On OLEDs, turn on **Software black frame insertion** and use **Maximize brightness**.
+3. Turn on **Software black frame insertion** and use **Maximize brightness**.
+4. Adjust **Phase** and **Shutter** until each eye sees only its own image.
+
+### 5. Show a game or video in 3D
+
+1. Set the game or video player to output **side-by-side** 3D (in Dolphin: Graphics > Stereoscopic 3D Mode = Side-by-Side).
+2. In **Sources & games**, pick its window with window capture, or install the `VisionStereoSpout.addon64` ReShade add-on in the game and pick its Spout sender.
 
 Every control is explained in [docs/USAGE.md](docs/USAGE.md). Emitter details and troubleshooting are in [docs/EMITTER.md](docs/EMITTER.md).
 
@@ -86,26 +118,16 @@ Self tests that need no emitter:
 .\build\bin\Release\VisionRestoration.exe --smoke-test
 ```
 
-## Game support
-
-| Type | Status |
-|---|---|
-| Direct3D 11 games with side-by-side stereo output (e.g. Dolphin, geo-11) | In progress |
-| Direct3D 12 games without stereo, depth-based 3D from the game's depth buffer (e.g. GTA V Enhanced) | In progress |
-| Games with native stereo 3D support | Planned |
-| DirectX 9 and 10, and Vulkan | Planned |
-| Stereo mods for games without built-in 3D | Planned |
-
 ## Roadmap
 
-- [x] Original emitter control without the NVIDIA driver
-- [x] Frame-sequential output at 100 to 240 Hz, SDR and HDR
-- [x] Clean full-screen stereo confirmed through the glasses (4K 240 Hz OLED)
-- [ ] Stable game hook
-- [ ] Compatibility with all stereo-capable games
-- [ ] One central install, with no files copied into game folders
-- [ ] Mod support for games without native stereo
-- [ ] DIY RP2040 emitter
+- [x] Original emitter control without the NVIDIA stereo driver
+- [x] Clean full-screen 3D through the glasses on a 240 Hz OLED (black frame insertion, SDR and HDR)
+- [x] Side-by-side capture from a window or through ReShade
+- [ ] LCD, QLED and Mini-LED displays without ghosting and crosstalk
+- [ ] Other refresh rates proven (100, 120, 144 Hz)
+- [ ] A working general in-game hook, instead of per-game support
+- [ ] Testing on AMD and Intel graphics cards
+- [ ] DIY RP2040 emitter (firmware written, hardware untested)
 - [ ] First release
 
 ## Documentation
@@ -115,11 +137,13 @@ Self tests that need no emitter:
 - [Timing calibration](docs/TIMING-CALIBRATION.md)
 - [Full screen at 120 Hz](docs/FULLSCREEN-120HZ.md)
 - [DIY RP2040 emitter](docs/RP2040.md)
-- [Development status](docs/STATUS.md)
+- [Development log](docs/STATUS.md)
 
 ## Contributing
 
-Issues and pull requests are welcome. Bug reports help most when they include your display model, refresh rate, GPU and `reports/session.log`.
+This is a personal project built for one setup, published to show that the 3D Vision USB emitter can be unlocked for other monitors and newer graphics cards. Where it goes next depends on who jumps in. Help is most useful on LCD/QLED crosstalk, a general in-game hook, and testing on other GPUs and displays.
+
+Bug reports help most when they include your display model, refresh rate, GPU and `reports/session.log`.
 
 ## Credits
 

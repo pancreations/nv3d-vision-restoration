@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vision Restoration</title>
-<meta name="description" content="Bring NVIDIA 3D Vision glasses back to life on modern Windows PCs. No discontinued 3D Vision driver, no GPU driver downgrade.">
+<title>NV3D Vision Restoration Project</title>
+<meta name="description" content="Proof of concept: NVIDIA 3D Vision glasses and the original USB emitter on a modern monitor and graphics card, without NVIDIA's discontinued 3D Vision driver.">
 <style>
   :root {
     --bg: #0c0d10; --panel: #15171c; --line: #262a33; --text: #e8e9ec; --muted: #9ba1ad;
@@ -33,13 +33,16 @@
   }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #0c0d10; }
   .status {
-    margin-top: 2rem; padding: .9rem 1.1rem; border-left: 3px solid var(--accent); background: var(--panel);
-    border-radius: 0 .5rem .5rem 0; color: var(--muted); max-width: 42rem;
+    margin-top: 2rem; padding: .9rem 1.1rem; border-left: 3px solid var(--left); background: var(--panel);
+    border-radius: 0 .5rem .5rem 0; color: var(--muted); max-width: 44rem;
   }
+  .status p { margin: 0 0 .4rem; }
+  .status p:last-child { margin: 0; }
   .status strong { color: var(--text); }
   section { padding-block: 3rem; border-bottom: 1px solid var(--line); }
   h2 { font-size: 1.6rem; margin: 0 0 1.5rem; }
   h3 { font-size: 1.1rem; margin: 0 0 .5rem; }
+  .intro { color: var(--muted); margin: -.75rem 0 1.5rem; max-width: 46rem; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: .6rem; padding: 1.1rem 1.2rem; }
   .card p { margin: 0; color: var(--muted); }
@@ -56,17 +59,19 @@
     overflow-x: auto; margin: .5rem 0 .75rem; font-size: .9rem; line-height: 1.5;
   }
   code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
-  p code, li code { background: var(--panel); border: 1px solid var(--line); border-radius: .3rem; padding: 0 .3rem; font-size: .9em; color: var(--text); }
+  p code, li code, td code { background: var(--panel); border: 1px solid var(--line); border-radius: .3rem; padding: 0 .3rem; font-size: .9em; color: var(--text); }
   .warn { color: var(--text) !important; }
   .warn strong { color: var(--left); }
   ul.req { columns: 2 18rem; padding-left: 1.2rem; color: var(--muted); margin: 0; }
   ul.req li { break-inside: avoid; margin-bottom: .4rem; }
-  .table-wrap { overflow-x: auto; }
+  .table-wrap { overflow-x: auto; margin-bottom: .5rem; }
   table { border-collapse: collapse; width: 100%; min-width: 30rem; }
   th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 600; font-size: .9rem; }
-  .pill { font-size: .8rem; padding: .1rem .5rem; border-radius: 1rem; border: 1px solid var(--line); white-space: nowrap; }
-  .pill.progress { color: var(--accent); border-color: var(--accent); }
+  td.note { color: var(--muted); }
+  .pill { font-size: .8rem; padding: .1rem .5rem; border-radius: 1rem; border: 1px solid var(--line); white-space: nowrap; color: var(--muted); }
+  .pill.ok { color: var(--accent); border-color: var(--accent); }
+  .pill.bad { color: var(--left); border-color: var(--left); }
   .docs { display: flex; flex-wrap: wrap; gap: .6rem; }
   footer { padding-block: 2.5rem 3rem; color: var(--muted); font-size: .9rem; }
   footer p { margin: 0 0 .5rem; }
@@ -76,25 +81,66 @@
 <div class="wrap">
 
 <header class="hero">
-  <p class="eyebrow">Open source &middot; Windows 10 / 11</p>
-  <h1>Vision Restoration</h1>
-  <p class="lede">Bring NVIDIA 3D Vision glasses back to life on modern Windows PCs. No discontinued 3D Vision driver, no GPU driver downgrade. Just the original emitter, your glasses and a high-refresh display.</p>
+  <p class="eyebrow">Open project &middot; Proof of concept &middot; Windows 10 / 11</p>
+  <h1>NV3D Vision Restoration Project</h1>
+  <p class="lede">NVIDIA 3D Vision glasses and the original USB IR emitter, working on a modern monitor and graphics card without NVIDIA's discontinued 3D Vision driver.</p>
   <div class="actions">
-    <a class="btn primary" href="#install">Install guide</a>
+    <a class="btn primary" href="#status">Where it stands</a>
+    <a class="btn" href="#install">Install guide</a>
     <a class="btn" data-repo="" href="#">Source code on GitHub</a>
   </div>
-  <p class="status"><strong>Early development.</strong> There is no release yet. Clean full-screen stereo has been confirmed through the glasses on a 4K 240&nbsp;Hz OLED. Game support is in progress.</p>
+  <div class="status">
+    <p><strong>Personal project, proof of concept. No release.</strong></p>
+    <p><strong>Working:</strong> side-by-side 3D captured into the app from a game window, a side-by-side video or ReShade, on a 240&nbsp;Hz OLED monitor.</p>
+    <p><strong>Not working yet:</strong> the in-game hook has never worked. LCD, QLED and Mini-LED displays show ghosting and crosstalk.</p>
+  </div>
 </header>
+
+<section id="status">
+  <h2>What works today</h2>
+  <h3>3D sources</h3>
+  <p class="intro" style="margin-top:0">Only side-by-side input works: the game or video has to produce its own left and right images. Vision Restoration does not add 3D to games.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Source</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Window capture of a game rendering side-by-side 3D (proven with Dolphin set to side-by-side)</td><td><span class="pill ok">Working</span></td></tr>
+        <tr><td>Window capture of any side-by-side 3D video</td><td><span class="pill ok">Working</span></td></tr>
+        <tr><td>ReShade capture: a ReShade add-on sends the game's side-by-side frames to the app over Spout</td><td><span class="pill ok">Working</span></td></tr>
+        <tr><td>In-game hook</td><td><span class="pill bad">Broken, never worked</span></td></tr>
+        <tr><td>geo-11</td><td><span class="pill">Untested</span></td></tr>
+        <tr><td>Native stereo 3D games, DirectX 9 / 10, Vulkan</td><td><span class="pill">Not started</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="intro" style="margin:1rem 0 2.5rem">The goal is not to add support game by game; the plan is one general hook that works across games. That depends on who joins the project.</p>
+
+  <h3>Displays</h3>
+  <p class="intro" style="margin-top:0">The glasses close each lens while the other eye's image is on screen. It only looks clean if the screen has fully switched images before the lens opens, so your display's pixel response time decides whether it works.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Display</th><th>Status</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>OLED at 240&nbsp;Hz</td><td><span class="pill ok">Proven</span></td><td class="note">Clean full-screen 3D through the glasses with software black frame insertion, SDR and HDR.</td></tr>
+        <tr><td>OLED at 100, 120 or 144&nbsp;Hz</td><td><span class="pill">Not proven</span></td><td class="note">Selectable in the app, not confirmed through the glasses.</td></tr>
+        <tr><td>LCD, QLED, Mini-LED</td><td><span class="pill bad">Not working yet</span></td><td class="note">Slower pixel response leaves part of the other eye's image on screen: ghosting and crosstalk. Being worked on.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:2.5rem">Graphics cards</h3>
+  <p class="intro" style="margin-top:0">The app uses standard Windows display APIs (Direct3D 11 / DXGI) instead of NVIDIA's stereo driver, so in theory any graphics card can drive it, not only NVIDIA ones. So far it has only been tested with an NVIDIA GPU.</p>
+</section>
 
 <section>
   <h2>What it does</h2>
   <div class="grid">
-    <div class="card"><h3>Original emitter, no NVIDIA driver</h3><p>Talks to the 3D Vision USB IR emitter over WinUSB and uploads its firmware itself. Your current GPU driver stays untouched.</p></div>
-    <div class="card"><h3>High-refresh output</h3><p>100, 120, 144 and 240&nbsp;Hz, SDR and HDR, with black frame insertion for clean eye separation on modern panels.</p></div>
+    <div class="card"><h3>Original emitter, no NVIDIA stereo driver</h3><p>Talks to the 3D Vision USB IR emitter over WinUSB and uploads its firmware itself. Your GPU driver stays untouched.</p></div>
+    <div class="card"><h3>Frame-sequential output</h3><p>Left / Black / Right / Black with software black frame insertion, SDR and HDR.</p></div>
+    <div class="card"><h3>Side-by-side capture</h3><p>Captures a game window or video player showing side-by-side 3D, or receives frames from ReShade over Spout.</p></div>
     <div class="card"><h3>Live timing controls</h3><p>Phase, shutter width, phase sweep and eye swap while you watch through the glasses. Saved per display.</p></div>
-    <div class="card"><h3>Stereo sources</h3><p>Built-in test scene, stereo image pairs, window capture, Spout and a Blender viewport add-on.</p></div>
-    <div class="card"><h3>In-game hook</h3><p>Syncs the glasses to a game's own frames: side-by-side Direct3D 11 games such as Dolphin, and depth-based 3D for Direct3D 12 games.</p></div>
-    <div class="card"><h3>Diagnostics</h3><p>Live vblank jitter, present timing and emitter command timing, plus self tests that need no hardware.</p></div>
+    <div class="card"><h3>Calibration aids</h3><p>Built-in 3D test scene and per-eye test patterns.</p></div>
+    <div class="card"><h3>Diagnostics</h3><p>Vblank jitter, present timing and emitter command timing, plus self tests that need no hardware.</p></div>
   </div>
 </section>
 
@@ -104,7 +150,8 @@
     <li>Windows 10 or 11, 64-bit</li>
     <li>NVIDIA 3D Vision or 3D Vision 2 glasses</li>
     <li>NVIDIA 3D Vision USB IR emitter</li>
-    <li>A display at 100&nbsp;Hz or higher (240&nbsp;Hz OLED recommended)</li>
+    <li>A 240&nbsp;Hz OLED monitor (the only display type proven so far)</li>
+    <li>A game or video that outputs side-by-side 3D</li>
     <li>Visual Studio 2022 with <em>Desktop development with C++</em>, and CMake 3.24+</li>
     <li>Your own copy of NVIDIA's 3D Vision USB driver package (for the emitter firmware)</li>
   </ul>
@@ -112,12 +159,12 @@
 
 <section id="install">
   <h2>Install and set up the emitter</h2>
-  <p style="color:var(--muted);margin-top:-.75rem">There is no release build yet, so installing means building from source. Third-party libraries and NVIDIA's firmware are not part of this project. You download them yourself from their official sources.</p>
+  <p class="intro">There is no release build, so installing means building from source. Third-party libraries and NVIDIA's firmware are not part of this project. You download them yourself from their official sources.</p>
   <ol class="steps">
     <li>
       <h3>Build the app</h3>
 <pre><code>git clone <span data-repo-text>&lt;repository URL&gt;</span>.git
-cd nv3d-vision-restoration
+cd nv3d-vision-restoration-project
 .\tools\Get-Dependencies.ps1
 .\build.ps1</code></pre>
       <p><code>Get-Dependencies.ps1</code> downloads libusb, Dear ImGui, Spout2 and the ReShade headers from their official releases. The app is built to <code>build\bin\Release\VisionRestoration.exe</code>.</p>
@@ -153,39 +200,32 @@ cd nv3d-vision-restoration
     <li>
       <h3>Run and calibrate</h3>
       <ul>
-        <li>Run <code>Launch.cmd</code>.</li>
+        <li>Set the monitor to 240&nbsp;Hz and run <code>Launch.cmd</code>.</li>
         <li>Pick your display and refresh rate, click <em>Match output rate</em>, then <em>Start 3D preview</em>. The glasses start shuttering.</li>
-        <li>Adjust <em>Phase</em> and <em>Shutter</em> until each eye sees only its own image. On OLEDs, turn on <em>Software black frame insertion</em> and use <em>Maximize brightness</em>.</li>
+        <li>Turn on <em>Software black frame insertion</em> and use <em>Maximize brightness</em>.</li>
+        <li>Adjust <em>Phase</em> and <em>Shutter</em> until each eye sees only its own image.</li>
+      </ul>
+    </li>
+    <li>
+      <h3>Show a game or video in 3D</h3>
+      <ul>
+        <li>Set the game or video player to output <strong>side-by-side</strong> 3D (in Dolphin: Graphics &gt; Stereoscopic 3D Mode = Side-by-Side).</li>
+        <li>In <em>Sources &amp; games</em>, pick its window with window capture, or install the <code>VisionStereoSpout.addon64</code> ReShade add-on in the game and pick its Spout sender.</li>
       </ul>
     </li>
   </ol>
 </section>
 
 <section>
-  <h2>Game support</h2>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Type</th><th>Status</th></tr></thead>
-      <tbody>
-        <tr><td>Direct3D 11 games with side-by-side stereo output (Dolphin, geo-11)</td><td><span class="pill progress">In progress</span></td></tr>
-        <tr><td>Direct3D 12 games without stereo, depth-based 3D (GTA V Enhanced)</td><td><span class="pill progress">In progress</span></td></tr>
-        <tr><td>Games with native stereo 3D support</td><td><span class="pill">Planned</span></td></tr>
-        <tr><td>DirectX 9 and 10, and Vulkan</td><td><span class="pill">Planned</span></td></tr>
-        <tr><td>Stereo mods for games without built-in 3D</td><td><span class="pill">Planned</span></td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section>
-  <h2>Documentation</h2>
+  <h2>Help wanted</h2>
+  <p class="intro" style="margin-top:0">This is a personal project built for one setup, published to show that the 3D Vision USB emitter can be unlocked for other monitors and newer graphics cards. Where it goes next depends on who jumps in. The most useful areas: LCD/QLED crosstalk, a general in-game hook, and testing on other GPUs and displays.</p>
   <div class="docs">
     <a class="btn" href="USAGE.html">Usage</a>
     <a class="btn" href="EMITTER.html">Emitter</a>
     <a class="btn" href="TIMING-CALIBRATION.html">Timing calibration</a>
     <a class="btn" href="FULLSCREEN-120HZ.html">Full screen at 120&nbsp;Hz</a>
     <a class="btn" href="RP2040.html">DIY RP2040 emitter</a>
-    <a class="btn" href="STATUS.html">Development status</a>
+    <a class="btn" href="STATUS.html">Development log</a>
   </div>
 </section>
 
