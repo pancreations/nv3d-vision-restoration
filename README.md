@@ -56,11 +56,20 @@ The emitter has no permanent firmware: the PC uploads it every time the emitter 
 
 ### 3. Give the emitter the WinUSB driver
 
-1. Plug the emitter straight into a USB port on the PC (no hub). With no driver, Device Manager lists it as **NVIDIA stereo controller** (`USB\VID_0955&PID_7003`) with a warning.
-2. Run [Zadig](https://zadig.akeo.ie/), choose **Options > List All Devices**, select **NVIDIA stereo controller** (USB ID `0955 7003`), pick **WinUSB** as the target driver and click **Install Driver**.
-3. Start the app (step 4). It uploads the firmware and the emitter restarts as USB ID `0955 0007`. If the app then reports that it cannot open the emitter, repeat the Zadig step for `0955 0007` and press **Refresh USB**.
+The emitter appears to Windows as two different USB devices, one before its firmware is loaded and one after. The first number (`0955`, NVIDIA) stays the same; the second number changes:
 
-Only the emitter's own two USB IDs get WinUSB. Don't install NVIDIA's 3D Vision driver or change your GPU driver.
+| Emitter state | USB ID | Driver |
+|---|---|---|
+| Just plugged in, no firmware yet | `0955` **`7003`** | Install WinUSB once |
+| Firmware running (after the app uploads it) | `0955` **`0007`** | Install WinUSB once |
+
+Each needs WinUSB one time per PC. After that, plugging the emitter in again only needs the app to re-upload the firmware, which it does by itself.
+
+1. Plug the emitter straight into a USB port on the PC (no hub). With no driver, Device Manager lists it as **NVIDIA stereo controller** with a warning.
+2. Run [Zadig](https://zadig.akeo.ie/), choose **Options > List All Devices**, select the NVIDIA device with USB ID `0955 7003`, pick **WinUSB** as the target driver and click **Install Driver**.
+3. Start the app (step 4). It uploads the firmware and the emitter restarts with the **other** ID, `0955 0007`. If the app then reports that it cannot open the emitter, run Zadig again, select `0955 0007`, install **WinUSB**, and press **Refresh USB** in the app.
+
+Only these two emitter IDs get WinUSB. Don't install NVIDIA's 3D Vision driver or change your GPU driver.
 
 ### 4. Run and calibrate
 

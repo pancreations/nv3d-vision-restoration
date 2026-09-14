@@ -133,10 +133,21 @@ cd nv3d-vision-restoration
     </li>
     <li>
       <h3>Give the emitter the WinUSB driver</h3>
+      <p>The emitter appears to Windows as two different USB devices: one before its firmware is loaded and one after. The first number (<code>0955</code>, NVIDIA) stays the same; the second number changes. Each needs WinUSB one time per PC.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Emitter state</th><th>USB ID</th></tr></thead>
+          <tbody>
+            <tr><td>Just plugged in, no firmware yet</td><td><code>0955 <strong>7003</strong></code></td></tr>
+            <tr><td>Firmware running (after the app uploads it)</td><td><code>0955 <strong>0007</strong></code></td></tr>
+          </tbody>
+        </table>
+      </div>
       <ul>
-        <li>Plug the emitter straight into the PC. Device Manager lists it as <strong>NVIDIA stereo controller</strong> (<code>USB\VID_0955&amp;PID_7003</code>) with no driver.</li>
-        <li>Run <a href="https://zadig.akeo.ie/">Zadig</a>, choose <em>Options &gt; List All Devices</em>, select <strong>NVIDIA stereo controller</strong> (USB ID <code>0955 7003</code>), pick <strong>WinUSB</strong> and click <em>Install Driver</em>.</li>
-        <li>After the app uploads the firmware, the emitter restarts as USB ID <code>0955 0007</code>. If the app can't open it, repeat the Zadig step for that ID and press <em>Refresh USB</em>.</li>
+        <li>Plug the emitter straight into the PC. Device Manager lists it as <strong>NVIDIA stereo controller</strong> with no driver.</li>
+        <li>Run <a href="https://zadig.akeo.ie/">Zadig</a>, choose <em>Options &gt; List All Devices</em>, select the NVIDIA device with USB ID <code>0955 7003</code>, pick <strong>WinUSB</strong> and click <em>Install Driver</em>.</li>
+        <li>After the app uploads the firmware, the emitter restarts with the <strong>other</strong> ID, <code>0955 0007</code>. If the app can't open it, run Zadig again for <code>0955 0007</code>, install WinUSB, and press <em>Refresh USB</em>.</li>
+        <li>After both are installed, plugging the emitter in again needs no driver step: the app re-uploads the firmware by itself.</li>
       </ul>
     </li>
     <li>
