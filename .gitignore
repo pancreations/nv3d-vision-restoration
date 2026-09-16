@@ -9,6 +9,8 @@ __pycache__/
 
 # Third-party dependencies are not redistributed; tools/Get-Dependencies.ps1 downloads them
 /third_party/
+# Depth network weights for the whole-screen conversion, downloaded by the same script
+/models/
 
 # Local-only: footage, extracted NVIDIA files, test copies of games
 /Footage240fps/

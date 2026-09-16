@@ -1,6 +1,4 @@
 #include "sources.h"
-#include "frame_channel.h"
-#include <SpoutDX.h>
 #include <wincodec.h>
 #include <d3dkmthk.h>
 #include <dwmapi.h>
@@ -14,67 +12,27 @@
 #include <chrono>
 
 namespace vision {
-namespace {
-LONGLONG qpcTicks(){LARGE_INTEGER v;QueryPerformanceCounter(&v);return v.QuadPart;}
-double qpcTicksPerSecond(){static double f=[]{LARGE_INTEGER v;QueryPerformanceFrequency(&v);return double(v.QuadPart);}();return f;}
-bool senderAlive(const frames::Header* h){return h->magic==frames::magic&&h->version==frames::version&&h->senderPid&&double(qpcTicks()-h->senderHeartbeatQpc)/qpcTicksPerSecond()<1.5;}
-std::string senderName(const frames::Header* h){return std::string(h->senderName,strnlen(h->senderName,sizeof(h->senderName)));}
-// Opens the sender's header and pixel mappings for the receiving thread; closes everything on exit.
-struct FrameChannelReader {
-    HANDLE headerMapping=nullptr,dataMapping=nullptr,event=nullptr;frames::Header* header=nullptr;const uint8_t* data=nullptr;uint32_t pid=0,generation=0;uint64_t slotBytes=0;
-    void closeData(){if(data)UnmapViewOfFile(data);data=nullptr;if(dataMapping)CloseHandle(dataMapping);dataMapping=nullptr;pid=generation=0;slotBytes=0;}
-    ~FrameChannelReader(){closeData();if(header)UnmapViewOfFile(header);if(headerMapping)CloseHandle(headerMapping);if(event)CloseHandle(event);}
-    bool openHeader(){
-        if(header)return true;
-        headerMapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,frames::headerName);if(!headerMapping)return false;
-        header=static_cast<frames::Header*>(MapViewOfFile(headerMapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(frames::Header)));
-        if(!header){CloseHandle(headerMapping);headerMapping=nullptr;return false;}
-        if(!event)event=OpenEventW(SYNCHRONIZE,FALSE,frames::frameEventName);
-        return true;
-    }
-    bool openData(uint32_t senderPid,uint32_t senderGeneration,uint64_t bytes){
-        if(data&&pid==senderPid&&generation==senderGeneration&&slotBytes==bytes)return true;
-        closeData();wchar_t name[192];swprintf_s(name,L"%s.Data.%u.%u",frames::headerName,senderPid,senderGeneration);
-        dataMapping=OpenFileMappingW(FILE_MAP_READ,FALSE,name);if(!dataMapping)return false;
-        data=static_cast<const uint8_t*>(MapViewOfFile(dataMapping,FILE_MAP_READ,0,0,SIZE_T(bytes*frames::slotCount)));
-        if(!data){closeData();return false;}
-        pid=senderPid;generation=senderGeneration;slotBytes=bytes;return true;
-    }
-};
-}
-void FrameChannelHost::close(){if(view_)UnmapViewOfFile(view_);view_=nullptr;if(mapping_)CloseHandle(mapping_);mapping_=nullptr;staleSince_=0;}
-FrameChannelLink FrameChannelHost::poll(const FrameChannelReport& r){
-    FrameChannelLink link;double now=qpc();
-    if(!view_){
-        if(now<nextOpen_)return link;nextOpen_=now+.25;
-        mapping_=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,frames::headerName);if(!mapping_)return link;
-        view_=MapViewOfFile(mapping_,FILE_MAP_ALL_ACCESS,0,0,sizeof(frames::Header));if(!view_){close();return link;}
-    }
-    auto* h=static_cast<frames::Header*>(view_);
-    h->hostPid=GetCurrentProcessId();h->hostHeartbeatQpc=qpcTicks();
-    h->outputRunning=r.outputRunning;h->emitterReady=r.emitterReady;h->hostState=r.outputRunning?frames::HostPresenting:r.emitterReady?frames::HostIdle:frames::HostWaitingForEmitter;
-    strncpy_s(h->hostMessage,r.message.c_str(),_TRUNCATE);
-    link.present=senderAlive(h);
-    if(!link.present){
-        // Let go of a dead sender's mapping so the next Blender session starts from a fresh one.
-        if(!staleSince_)staleSince_=now;else if(now-staleSince_>3)close();
-        return link;
-    }
-    staleSince_=0;link.active=h->active!=0;link.visible=h->visible!=0;link.view={h->viewLeft,h->viewTop,h->viewLeft+h->viewWidth,h->viewTop+h->viewHeight};link.pid=h->senderPid;link.name=senderName(h);
-    return link;
-}
 std::vector<std::pair<HWND,std::string>> captureWindows(HWND exclude){
     std::vector<std::pair<HWND,std::string>> result;
     EnumWindows([](HWND h,LPARAM p)->BOOL{auto& r=*reinterpret_cast<std::vector<std::pair<HWND,std::string>>*>(p);if(!IsWindowVisible(h) || GetWindow(h,GW_OWNER))return TRUE;wchar_t title[512]{};GetWindowTextW(h,title,512);if(title[0])r.emplace_back(h,utf8(title));return TRUE;},reinterpret_cast<LPARAM>(&result));
     std::erase_if(result,[&](auto& w){return w.first==exclude;});return result;
 }
-void StereoSource::start(const SourceConfig& c,LUID adapter){stop();if(c.kind==SourceKind::Patterns)return;{std::lock_guard l(mutex_);status_={"Starting source...",0,0,0,true};}thread_=std::jthread([this,c,adapter](std::stop_token s){run(s,c,adapter);});}
+void StereoSource::start(const SourceConfig& c,LUID adapter){stop();if(c.kind==SourceKind::Patterns)return;{std::lock_guard l(mutex_);status_={"Starting source...",0,0,0,true};screen_=c.screen;++screenRevision_;}thread_=std::jthread([this,c,adapter](std::stop_token s){run(s,c,adapter);});}
+void StereoSource::configureScreen(const ScreenSettings& s){std::lock_guard l(mutex_);screen_=s;++screenRevision_;}
 void StereoSource::stop(){if(thread_.joinable()){thread_.request_stop();thread_.join();}std::lock_guard l(mutex_);latest_.reset();status_={};}
 std::shared_ptr<StereoFrame> StereoSource::latest()const{std::lock_guard l(mutex_);return latest_;}
 SourceStatus StereoSource::status()const{std::lock_guard l(mutex_);return status_;}
 void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     try{
+        if(config.kind==SourceKind::Screen)config.packing=Packing::SideBySide;
+        if(config.kind==SourceKind::Window||config.kind==SourceKind::Screen){
+            // WGC's 8-bit path clips an HDR desktop before the presenter ever
+            // receives it. Preserve scRGB for both HDR and SDR output modes.
+            config.captureHDR=true;
+            const HMONITOR monitor=config.kind==SourceKind::Screen?config.monitor:MonitorFromWindow(config.window,MONITOR_DEFAULTTONEAREST);
+            for(const auto& display:enumerateDisplays())if(display.monitor==monitor){config.sdrWhiteLevel=display.sdrWhiteNits/80.f;break;}
+        }
         ComPtr<IDXGIFactory4> factory;check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)),"Source factory");ComPtr<IDXGIAdapter> adapter;check(factory->EnumAdapterByLuid(adapterId,IID_PPV_ARGS(&adapter)),"Source adapter");
         ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;check(D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"Source D3D11 device");
         std::array<std::shared_ptr<StereoFrame>,3> pool;
@@ -100,8 +58,9 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
                  while(context->GetData(done.Get(),&finished,sizeof(finished),0)==S_FALSE&&qpc()<giveUp)std::this_thread::yield();}
              else context->Flush();}
             check(key->ReleaseSync(0),"Release source mutex");
-            frame->width=width;frame->height=height;frame->packing=config.packing;frame->encoding=encoding;frame->timestamp=timestamp;
-            std::lock_guard l(mutex_);frame->pairId=++status_.frames;latest_=frame;status_.lastFrame=qpc();status_.message="Receiving complete stereo pairs";
+            frame->width=width;frame->height=height;frame->packing=config.kind==SourceKind::Screen?Packing::SideBySide:config.packing;frame->encoding=encoding;frame->timestamp=timestamp;
+            frame->alignmentApplied=config.kind==SourceKind::Screen;frame->sdrWhiteLevel=config.sdrWhiteLevel;
+            std::lock_guard l(mutex_);frame->pairId=++status_.frames;latest_=frame;status_.lastFrame=qpc();if(config.kind!=SourceKind::Screen)status_.message="Receiving complete stereo pairs"; // the screen conversion reports its own state
         };
         if(config.kind==SourceKind::Image){
             ComPtr<IWICImagingFactory> wic;check(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wic)),"WIC factory");
@@ -153,45 +112,8 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
                 if(config.packing==Packing::SideBySide)cropWidth&=~1u;else cropHeight&=~1u;
                 publish(texture.Get(),cropWidth,cropHeight,double(frame.SystemRelativeTime().count())/10000000.0,config.captureHDR?Encoding::LinearScRGB:Encoding::SRGB,cropLeft,cropTop);frame.Close();
             }session.Close();frames.Close();
-        }else if(config.kind==SourceKind::Spout){
-            spoutDX receiver;if(!receiver.OpenDirectX11(device.Get()))throw std::runtime_error("Spout initialization failed.");receiver.SetReceiverName(config.sender.empty()?nullptr:config.sender.c_str());
-            while(!stop.stop_requested()){
-                if(receiver.ReceiveTexture() && receiver.IsFrameNew()){
-                    auto* t=receiver.GetSenderTexture();if(t)publish(t,receiver.GetSenderWidth(),receiver.GetSenderHeight(),qpc(),config.encoding);
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            }receiver.ReleaseReceiver();receiver.CloseDirectX11();
-        }else if(config.kind==SourceKind::SharedFrames){
-            FrameChannelReader channel;ComPtr<ID3D11Texture2D> upload;unsigned uploadWidth=0,uploadHeight=0;uint64_t lastFrame=0;
-            {std::lock_guard l(mutex_);status_.message="Waiting for Blender to publish frames";}
-            while(!stop.stop_requested()){
-                if(!channel.openHeader()){std::this_thread::sleep_for(std::chrono::milliseconds(250));continue;}
-                if(!channel.event)channel.event=OpenEventW(SYNCHRONIZE,FALSE,frames::frameEventName);
-                if(channel.event)WaitForSingleObject(channel.event,50);else std::this_thread::sleep_for(std::chrono::milliseconds(4));
-                auto* h=channel.header;
-                if(h->magic!=frames::magic||h->version!=frames::version||h->format!=frames::FormatRGBA8BottomUp)continue;
-                int32_t latest=h->latestSlot;uint32_t pid=h->senderPid,generation=h->generation;uint64_t slotBytes=h->slotBytes;
-                if(latest<0||latest>=int32_t(frames::slotCount)||!slotBytes||slotBytes>uint64_t(16384)*16384*4)continue;
-                if(!channel.openData(pid,generation,slotBytes))continue;
-                auto& slot=h->slots[latest];uint32_t seq=slot.seq;uint64_t frameId=slot.frameId;
-                if((seq&1)||frameId==lastFrame)continue;
-                unsigned width=slot.width,height=slot.height;
-                if(!width||!height||width%2||uint64_t(width)*height*4>slotBytes)continue;
-                if(!upload||uploadWidth!=width||uploadHeight!=height){
-                    upload.Reset();D3D11_TEXTURE2D_DESC d{};d.Width=width;d.Height=height;d.MipLevels=d.ArraySize=d.SampleDesc.Count=1;d.Format=DXGI_FORMAT_R8G8B8A8_UNORM;d.Usage=D3D11_USAGE_DYNAMIC;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;d.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
-                    check(device->CreateTexture2D(&d,nullptr,&upload),"Frame channel texture");uploadWidth=width;uploadHeight=height;
-                }
-                {
-                    D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(upload.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped),"Map frame channel texture");
-                    const uint8_t* rows=channel.data+uint64_t(latest)*slotBytes;auto* target=static_cast<uint8_t*>(mapped.pData);
-                    for(unsigned y=0;y<height;y++)memcpy(target+uint64_t(y)*mapped.RowPitch,rows+uint64_t(height-1-y)*width*4,size_t(width)*4); // OpenGL rows are bottom-up
-                    context->Unmap(upload.Get(),0);
-                }
-                // The sender may have reused the slot during the upload; that texture is overwritten next time.
-                if(slot.seq!=seq||h->generation!=generation||h->senderPid!=pid){h->framesTorn++;continue;}
-                lastFrame=frameId;publish(upload.Get(),width,height,qpc(),Encoding::SRGB);h->framesReceived++;
-                std::lock_guard l(mutex_);status_.message="Receiving stereo frames from "+senderName(h);
-            }
+        }else if(config.kind==SourceKind::Screen){
+            runScreen(stop,config,adapterId,device.Get(),context.Get(),[&](ID3D11Texture2D* t,unsigned w,unsigned h,double ts,Encoding e,unsigned l,unsigned top){publish(t,w,h,ts,e,l,top);});
         }
     }catch(const winrt::hresult_error& e){std::lock_guard l(mutex_);status_.message=utf8(e.message().c_str());status_.running=false;}
     catch(const std::exception& e){std::lock_guard l(mutex_);status_.message=e.what();status_.running=false;}

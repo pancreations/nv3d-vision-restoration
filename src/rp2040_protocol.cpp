@@ -6,7 +6,7 @@
 
 namespace vision::rp2040 {
 namespace {
-bool validOpcode(Opcode op) { const auto n=static_cast<uint8_t>(op); return (n>=1 && n<=7)||n==128; }
+bool validOpcode(Opcode op) { const auto n=static_cast<uint8_t>(op); return (n>=1 && n<=8)||n==128; }
 }
 void put32(std::span<uint8_t> b,uint32_t v) { if(b.size()<4)return; for(unsigned i=0;i<4;++i)b[i]=uint8_t(v>>(8*i)); }
 void put64(std::span<uint8_t> b,uint64_t v) { if(b.size()<8)return; for(unsigned i=0;i<8;++i)b[i]=uint8_t(v>>(8*i)); }
@@ -56,10 +56,16 @@ Result Scheduler::configure(uint64_t session,Config c,uint64_t now) {
     if(!session_||session!=session_)return reject(Result::BadSession);
     if(now<lastNow_)return reject(Result::ClockReversed);
     if(count_||hadFrame_)return reject(Result::NotReady);
-    // Initial capability is approximately 120 Hz only. Exact frame targets
-    // carry fractional-period accumulation from the host.
-    if(c.periodUs<8300||c.periodUs>8367||c.leftUs<250||c.rightUs<250||
+    // This is the interval BETWEEN eye openings, including held/black refreshes.
+    // 30-120 openings/s; exact targets carry the fractional refresh accumulation.
+    const auto minPeriod=c.frameAnchored?minAperturePeriodUs:minPeriodUs;
+    const auto maxPeriod=c.frameAnchored?maxAperturePeriodUs:maxPeriodUs;
+    if(c.periodUs<minPeriod||c.periodUs>maxPeriod||c.leftUs<250||c.rightUs<250||
        c.leftUs>c.periodUs-2*guardUs||c.rightUs>c.periodUs-2*guardUs)return reject(Result::BadConfig);
+    if(c.frameAnchored&&(c.frameGuardUs<guardUs||c.frameGuardUs>c.periodUs/2||
+       c.leftOpenUs<c.frameGuardUs||c.rightOpenUs<c.frameGuardUs||
+       uint64_t(c.leftOpenUs)+c.leftUs>c.periodUs-c.frameGuardUs||
+       uint64_t(c.rightOpenUs)+c.rightUs>c.periodUs-c.frameGuardUs))return reject(Result::BadConfig);
     config_=c;configured_=true;lastNow_=lastActivity_=now;return Result::Ok;
 }
 Result Scheduler::enqueue(Frame f,uint64_t now) {
@@ -70,19 +76,27 @@ Result Scheduler::enqueue(Frame f,uint64_t now) {
     if(f.eye!=Eye::Left&&f.eye!=Eye::Right)return reject(Result::WrongEye);
     if(f.sequence==0||f.sequence<=lastSequence_)return reject(Result::StaleSequence);
     if(count_==capacity)return reject(Result::QueueFull);
+    const auto frameStart=f.openUs;
+    if(config_.frameAnchored) {
+        const auto delay=f.eye==Eye::Left?config_.leftOpenUs:config_.rightOpenUs;
+        if(f.openUs>std::numeric_limits<uint64_t>::max()-delay)return reject(Result::TooFar);
+        f.openUs+=delay;
+    }
     if(f.openUs<now || f.openUs-now<minLeadUs)return reject(Result::TooSoon);
     if(f.openUs-now>horizonUs)return reject(Result::TooFar);
     uint64_t duration=f.eye==Eye::Left?config_.leftUs:config_.rightUs;
     if(f.openUs>std::numeric_limits<uint64_t>::max()-duration-guardUs)return reject(Result::TooFar);
     if(hadFrame_) {
+        if(config_.frameAnchored&&(frameStart<config_.frameGuardUs||lastClose_>frameStart-config_.frameGuardUs))return reject(Result::Overlap);
         if(f.openUs<lastClose_+guardUs)return reject(Result::Overlap);
         if(f.eye==lastEye_)return reject(Result::WrongEye);
-        const auto delta=f.openUs-lastOpen_;
+        if(frameStart<lastOpen_)return reject(Result::BadConfig);
+        const auto delta=frameStart-lastOpen_;
         // Do not free-run across missing display frames. Reacquire a session.
         if(delta+100<config_.periodUs||delta>config_.periodUs+100)return reject(Result::BadConfig);
     }
     auto& e=queue_[(head_+count_)%capacity];e={f,f.openUs+duration,false};++count_;
-    lastSequence_=f.sequence;lastClose_=e.closeUs;lastOpen_=f.openUs;lastEye_=f.eye;
+    lastSequence_=f.sequence;lastClose_=e.closeUs;lastOpen_=frameStart;lastEye_=f.eye;
     hadFrame_=true;lastNow_=lastActivity_=now;return Result::Ok;
 }
 Step Scheduler::stop(Result reason) {
@@ -145,6 +159,7 @@ Exchange DeviceEndpoint::receive(std::span<const uint8_t> bytes,uint64_t now,uin
     Result result=Result::Ok;
     uint16_t expected=0;
     if(m.opcode==Opcode::Configure)expected=12;
+    if(m.opcode==Opcode::ConfigureAperture)expected=24;
     if(m.opcode==Opcode::Schedule)expected=17;
     if(m.length!=expected)result=Result::BadLength;
     else {
@@ -154,6 +169,8 @@ Exchange DeviceEndpoint::receive(std::span<const uint8_t> bytes,uint64_t now,uin
         case Opcode::Clock: case Opcode::Status: case Opcode::Diagnostics: break; // read-only; no watchdog extension
         case Opcode::Configure:
             result=scheduler_.configure(m.session,{get32(p),get32(p.subspan(4)),get32(p.subspan(8))},now);break;
+        case Opcode::ConfigureAperture:
+            result=scheduler_.configure(m.session,{get32(p),get32(p.subspan(4)),get32(p.subspan(8)),true,get32(p.subspan(12)),get32(p.subspan(16)),get32(p.subspan(20))},now);break;
         case Opcode::Schedule:
             result=scheduler_.enqueue({m.session,get64(p),get64(p.subspan(8)),Eye(p[16])},now);break;
         case Opcode::Stop:
@@ -166,7 +183,7 @@ Exchange DeviceEndpoint::receive(std::span<const uint8_t> bytes,uint64_t now,uin
     Message response;response.opcode=Opcode::Reply;response.session=m.session;response.request=m.request;response.length=32;
     auto p=std::span<uint8_t>(response.payload);
     p[0]=uint8_t(result);p[1]=uint8_t(m.opcode);
-    p[2]=uint8_t((simulated_?0x80:0x40)|(scheduler_.ready()?1:0)); // simulation or experimental hardware; not optical-ready
+    p[2]=uint8_t((simulated_?0x80:0x40)|extendedCadenceFlag|apertureFlag|fastCadenceFlag|(scheduler_.ready()?1:0)); // capabilities do not claim optical calibration
     p[3]=uint8_t(Scheduler::capacity);put32(p.subspan(4),uint32_t(scheduler_.queued()));
     put64(p.subspan(8),now);put64(p.subspan(16),replyTime);put64(p.subspan(24),bootId_);
     if(m.opcode==Opcode::Status) {

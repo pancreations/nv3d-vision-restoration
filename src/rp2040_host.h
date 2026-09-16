@@ -4,6 +4,7 @@
 #include <functional>
 #include <stop_token>
 #include <string>
+#include <stdexcept>
 namespace vision::rp2040 {
 class Link {
 public:
@@ -15,8 +16,12 @@ public:
 struct HostStatus {
     uint64_t bootId=0, session=0, lastEpoch=0, events=0;
     double roundTripUs=0, uncertaintyUs=0;
-    bool simulated=false, clockReady=false;
+    bool simulated=false, clockReady=false, extendedCadence=false, aperture=false, fastCadence=false;
 };
+class ScheduleMiss : public std::runtime_error { public: using std::runtime_error::runtime_error; };
+class InvalidTiming : public std::invalid_argument { public: using std::invalid_argument::invalid_argument; };
+// Run the device's own configuration checks before touching a live session.
+bool validConfig(Config config);
 class Client {
 public:
     Client(Link& link,std::function<double()> hostMicroseconds,bool allowSimulation=false);

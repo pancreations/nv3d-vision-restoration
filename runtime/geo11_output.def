@@ -1,0 +1,4 @@
+EXPORTS
+ VisionStereoBootstrap
+    D3D11CreateDevice=VisionCreateDevice
+    D3D11CreateDeviceAndSwapChain=VisionCreateDeviceAndSwapChain

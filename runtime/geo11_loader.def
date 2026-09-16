@@ -1,0 +1,3 @@
+EXPORTS
+ D3D11CreateDevice=VisionLoaderCreateDevice
+ D3D11CreateDeviceAndSwapChain=VisionLoaderCreateDeviceAndSwapChain

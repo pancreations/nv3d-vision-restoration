@@ -38,6 +38,8 @@ std::vector<Display> enumerateDisplays(){
                 }
                 DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO color{};color.header={DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,sizeof(color),p.targetInfo.adapterId,p.targetInfo.id};
                 if(DisplayConfigGetDeviceInfo(&color.header)==ERROR_SUCCESS){d.hdrSupported=color.advancedColorSupported;d.hdrEnabled=color.advancedColorEnabled;}
+                DISPLAYCONFIG_SDR_WHITE_LEVEL white{};white.header={DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,sizeof(white),p.targetInfo.adapterId,p.targetInfo.id};
+                if(d.hdrEnabled&&DisplayConfigGetDeviceInfo(&white.header)==ERROR_SUCCESS&&white.SDRWhiteLevel)d.sdrWhiteNits=80.f*white.SDRWhiteLevel/1000.f;
             }
             ComPtr<IDXGIOutput6> out6;
             if(SUCCEEDED(output.As(&out6))){DXGI_OUTPUT_DESC1 ext{};if(SUCCEEDED(out6->GetDesc1(&ext)))d.maxNits=ext.MaxLuminance;}

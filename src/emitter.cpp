@@ -111,12 +111,23 @@ void Emitter::connect(const UsbDeviceInfo& info,const std::filesystem::path& fw,
 }
 void Emitter::disconnect(){if(worker_.joinable()){worker_.request_stop();cv_.notify_all();worker_.join();}suspended_=true;std::lock_guard lock(mutex_);pending_.clear();++generation_;status_.state=EmitterState::Disconnected;status_.message="Emitter disconnected";}
 void Emitter::configure(const Settings& s){validate(s);std::lock_guard lock(mutex_);
-    // A live timing edit must not cancel the eye already queued for the next
-    // refresh. Generation changes are reserved for stop/disconnect, where
-    // invalidating an in-flight command is intentional.
+    // NVIDIA applies register changes live and keeps its queued eye trigger.
+    // RP2040 fixes durations and cadence for a session: restart that session
+    // when its timing changes, including phase/eye changes that would otherwise
+    // violate the spacing or alternation of already-scheduled deadlines.
+    if(status_.scheduled&&(s.refresh!=settings_.refresh||s.sequence!=settings_.sequence||
+        s.phaseUs!=settings_.phaseUs||s.leftUs!=settings_.leftUs||s.rightUs!=settings_.rightUs||s.swapEyes!=settings_.swapEyes||!sameLcdAperture(s.lcd,settings_.lcd)||s.signalScanUs!=settings_.signalScanUs)){
+        if(s.lcd.enabled&&settings_.lcd.enabled&&s.refresh==settings_.refresh&&s.sequence==settings_.sequence&&s.swapEyes==settings_.swapEyes){
+            // A drag produces many intermediate values. Keep the current valid
+            // device session running until the hand pauses for 60 ms, then apply
+            // the latest aperture once. The picture never needs to be recreated.
+            lcdEditPending_=true;lcdEditAt_=qpc();
+        }else{lcdEditPending_=false;pending_.clear();++generation_;}
+        cv_.notify_one();
+    }
     settings_=s;
 }
-void Emitter::submit(Eye eye,double deadline){if(eye==Eye::Black)return;std::lock_guard lock(mutex_);if(status_.state!=EmitterState::Ready && status_.state!=EmitterState::Running && status_.state!=EmitterState::Simulated)return;if(pending_.size()>=4){pending_.erase(pending_.begin());status_.late++;}pending_.push_back(Command{eye,deadline,generation_});suspended_=false;cv_.notify_one();}
+void Emitter::submit(Eye eye,double deadline,double framePeriodUs){if(eye==Eye::Black)return;std::lock_guard lock(mutex_);if(status_.state!=EmitterState::Ready && status_.state!=EmitterState::Running && status_.state!=EmitterState::Simulated)return;if(pending_.size()>=4){pending_.erase(pending_.begin());status_.late++;}pending_.push_back(Command{eye,deadline,generation_,framePeriodUs});suspended_=false;cv_.notify_one();}
 void Emitter::suspend(){suspended_=true;std::lock_guard lock(mutex_);pending_.clear();++generation_;cv_.notify_one();}
 void Emitter::transfer(std::span<const uint8_t> bytes,uint8_t endpoint,std::stop_token stop){
     struct Completion{bool done=false;libusb_transfer_status status{};int actual=0;};Completion done;
@@ -210,7 +221,15 @@ void Emitter::run(std::stop_token stop,UsbDeviceInfo info,std::filesystem::path 
             wasSuspended=false;if(!command)continue;
             constexpr double maximumLateness=.0005;
             if(qpc()-command->deadline>maximumLateness){rejectLate();continue;}
-            double hz=settings.refresh/(settings.sequence==Sequence::Alternating?1:2);
+            if(settings.lcd.enabled) {
+                const double rate=command->framePeriodUs>0?1e6/command->framePeriodUs:settings.refresh;
+                auto aperture=lcdExposure(settings.lcd,apertureWindowHz(rate,settings.sequence),settings.signalScanUs);
+                if(!aperture.valid)throw std::runtime_error(aperture.message);
+                settings.phaseUs=aperture.openUs[0];settings.rightOffsetUs=float(aperture.openUs[1]-aperture.openUs[0]);
+                settings.leftUs=settings.rightUs=std::min(aperture.durationUs,nvidiaMaxShutterUs(sequenceEmitterHz(rate,settings.sequence)));
+                {std::lock_guard lock(mutex_);status_.aperturePeriodUs=aperture.periodUs;status_.apertureDurationUs=settings.leftUs;}
+            }
+            double hz=sequenceEmitterHz(settings.refresh,settings.sequence);
             // The 28-byte block carries the left eye timing. With a right-eye offset or unequal
             // durations, X/Y are rewritten just before every eye command (after the previous
             // boundary, before this one), so each eye gets its own window. Each write puts the

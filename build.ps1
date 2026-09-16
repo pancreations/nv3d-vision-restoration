@@ -3,7 +3,11 @@ $ErrorActionPreference='Stop'
 $projectRoot=$PSScriptRoot
 cmake -S $projectRoot -B "$projectRoot/build" -G 'Visual Studio 17 2022' -A x64
 if($LASTEXITCODE -ne 0){throw 'CMake configuration failed'}
-cmake --build "$projectRoot/build" --config $Configuration --target VisionRestoration vision_tests vision_platform_tests vision_firmware VisionStereoSpout VisionGameHook vision_rp2040_tests vision_rp2040_host_tests vision_rp2040_probe -- /m:1
+$targets=@('VisionRestoration','vision_stereo_setup','vision_tests','vision_compatibility_tests','vision_lcd_tests','vision_controls_tests','vision_menu_tests','vision_panel_tests','vision_platform_tests','vision_depth_tests','vision_screen_tests','vision_screen_bench','vision_overlay_probe','vision_firmware','VisionGameHook','vision_rp2040_tests','vision_rp2040_host_tests','vision_rp2040_probe')
+# The AI screen depth helper needs ONNX Runtime and DirectML from tools/Get-Dependencies.ps1.
+if(Test-Path "$projectRoot/third_party/onnxruntime/build/native/include/onnxruntime_c_api.h"){$targets+='VisionDepth'}
+cmake --build "$projectRoot/build" --config $Configuration --target $targets -- /m:1
 if($LASTEXITCODE -ne 0){throw 'Build failed'}
 ctest --test-dir "$projectRoot/build" -C $Configuration --output-on-failure
 if($LASTEXITCODE -ne 0){throw 'Tests failed'}
+& "$projectRoot/tools/Build-StereoRuntime.ps1" -Configuration $Configuration

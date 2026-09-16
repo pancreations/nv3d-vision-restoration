@@ -1,33 +1,51 @@
-# Stereo inputs
+# Stereo inputs and game integration
 
-> **Status 2026-09-14:** only window capture of side-by-side output works, proven with Dolphin. ReShade capture does not work. The in-game hook does not work. geo-11 and games with native stereo 3D have never been tested.
+Updated 2026-09-15.
 
-Every input must already contain a complete left/right pair. Select SBS or top/bottom packing under **Stereo sources**, configure the source, then press **Start source**. Changing packing or sender settings takes effect when restarted.
+## Available inputs
 
-| Input | Current path | Validation status |
-|---|---|---|
-| Built-in scenes | Direct shader output | Confirmed through the glasses on the G80SD, 4K 240 Hz HDR, black frame insertion, 2026-09-13 |
-| PNG/JPEG/BMP/JPS | WIC, SDR only | Implemented; HDR image metadata is not supported |
-| Dolphin | Native SBS output → Windows Graphics Capture | **Working** through the glasses. The only proven game source |
-| Blender | Stereo SBS/TB image or native packed preview window | Application-specific test pending |
-| SBS video | Player's packed stereo window → capture | Application-specific test pending |
-| Spout | Packed shared texture on output GPU | Automated local sender test available |
-| ReShade | DX11 packed backbuffer → included Spout add-on | **Does not work** |
-| geo-11 / 3Dmigoto | Existing packed stereo output → capture or Spout adapter | **Never tested** |
-| Games with native stereo 3D | Need the game's own stereo output in a form the app can read | **Never tested.** Unknown whether they work |
+| Input | Behavior |
+|---|---|
+| Built-in patterns | Calibration and rendered stereo test scenes. |
+| Stereo image | PNG/JPEG/BMP/JPS decoded as SDR; select SBS or top/bottom packing. |
+| Capture window | Capture an application's existing packed stereo output. Proven with Dolphin on the OLED. |
+| Whole screen (AI depth) | Capture a display and estimate depth; retain the click-through desktop output. |
 
-For capture, use a borderless window containing only the packed picture. Select **Capture HDR / scRGB** when capturing HDR content; Windows Graphics Capture uses an FP16 frame pool. A selected window may stop producing frames when minimized or under particular game presentation modes. The app holds the last complete pair and reports a stall. Closing/reopening the source requires selecting/restarting it.
+Spout texture and Blender viewport inputs, their receivers and Blender's automatic
+attachment have been removed. Spout is no longer a build dependency.
 
-For Spout, use the same GPU as the output display. Select the sender's actual encoding: SDR sRGB, linear scRGB, or HDR10 PQ/BT.2020. Spout texture format alone does not fully specify color interpretation. HDR output remains FP16; PQ is decoded into linear scRGB. HDR inputs shown on SDR output are explicitly tone-mapped by the shader; this is not HDR passthrough. Source images loaded through WIC are labeled SDR.
+For capture, select a window containing the packed picture. The app crops window
+decorations to its client area. A media player's toolbar is still part of its
+client; it is not stereo video. Window minimization and certain presentation modes
+can stop new frames. Closing/reopening the source requires selecting/restarting it.
 
-## Included ReShade adapter
+Capture automatically uses FP16 scRGB to preserve HDR data. Source encoding and
+SDR white are carried to the presenter; SDR output tone-maps HDR content. WIC image
+files are labeled SDR. Packing changes take effect when the source restarts.
 
-**This adapter does not work.** The description below is the design, not a working path.
+## Primary game target
 
-`build/Release/VisionStereoSpout.addon64` registers a DX11 sender named `VisionStereo_<process>_<runtime>`. Install it only in a test application's ReShade environment that supports add-ons. It copies the completed effect backbuffer into Spout. The backbuffer must already be SBS/TB; this adapter does not create stereo viewpoints. DX12/Vulkan/OpenGL output paths are not implemented in this adapter. Choose the sender in Vision Restoration and set the matching color encoding.
+The intended experience is to open Vision Restoration, launch an existing 3D
+Vision game with its established fix, and let an in-game compatibility backend
+supply full eye images and sequential presentation. The game keeps focus and input;
+our app owns activation, profiles and the emitter. SBS capture is the last resort.
 
-## Pair ownership
+This functionality is **not restored yet**. The existing VisionGameHook experiment
+is not working and is not a general stereo/NVAPI replacement. A successful installer
+or a connected timing channel is not evidence of game compatibility.
 
-The producer keeps a pool of shared FP16 or SDR textures. Published frames carry packing, encoding, timestamp and pair ID. Shared ownership prevents recycling an in-use pair; keyed mutexes order GPU access. The presenter acquires new input only at a full stereo-cycle boundary and retains it for both eyes. A slow source repeats the previous complete pair. Source decoding/capture occurs on its own worker and GPU context.
+See [the app-hosted architecture and acceptance tests](STEREO-COMPATIBILITY.md).
+Geo11 is the first candidate for reusing DX11 fixes; native stereo interfaces and
+legacy fixes require their own backends. AI desktop remains a separate feature.
 
-Output can keep a captured application's focus while its fullscreen output window stays above it. Ctrl+Alt+F8 returns to setup. Mouse-relative games, exclusive fullscreen games and anti-cheat environments need individual tests; no universal input compatibility is claimed.
+## Pair ownership and capture input
+
+The source publishes complete packed pairs with dimensions, encoding, timestamp
+and pair ID. Shared ownership retains consumer frames; keyed mutexes order GPU
+access. The presenter accepts a new pair at a full stereo-cycle boundary and holds
+it for both eyes. Capture/decoding runs on a separate worker.
+
+AI desktop uses a nonactivating, click-through output window. Ordinary captured-game
+fullscreen startup currently activates the output window; aligned game capture is
+a future fallback improvement. Global shortcuts are configurable under Shortcuts.
+No universal input or exclusive-fullscreen compatibility is claimed.

@@ -24,6 +24,7 @@ struct Display {
     // vertical blanking. A panel may re-time its own scan, so this is the signal, not a measurement.
     unsigned activeLines=0,totalLines=0;double scanUs=0;
     bool hdrSupported=false,hdrEnabled=false;
+    float sdrWhiteNits=80;
     float maxNits=0;
     std::vector<DEVMODEW> modes;
 };

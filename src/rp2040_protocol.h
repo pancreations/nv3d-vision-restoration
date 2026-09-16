@@ -11,7 +11,10 @@
 namespace vision::rp2040 {
 constexpr size_t packetSize = 64, payloadCapacity = 32;
 constexpr uint8_t protocolVersion = 1;
-enum class Opcode : uint8_t { Hello=1, Clock=2, Configure=3, Schedule=4, Stop=5, Status=6, Diagnostics=7, Reply=128 };
+constexpr uint8_t extendedCadenceFlag = 2;
+constexpr uint8_t apertureFlag = 4;
+constexpr uint8_t fastCadenceFlag = 8;
+enum class Opcode : uint8_t { Hello=1, Clock=2, Configure=3, Schedule=4, Stop=5, Status=6, Diagnostics=7, ConfigureAperture=8, Reply=128 };
 enum class Result : uint8_t {
     Ok, BadPacket, BadVersion, BadOpcode, BadLength, BadChecksum,
     BadSession, BadConfig, NotReady, StaleSequence, QueueFull,
@@ -34,7 +37,11 @@ uint32_t get32(std::span<const uint8_t> bytes);
 uint64_t get64(std::span<const uint8_t> bytes);
 
 enum class Eye : uint8_t { Left=0, Right=1 };
-struct Config { uint32_t periodUs=8333, leftUs=1500, rightUs=1500; };
+struct Config {
+    uint32_t periodUs=8333, leftUs=1500, rightUs=1500;
+    bool frameAnchored=false;
+    uint32_t leftOpenUs=0,rightOpenUs=0,frameGuardUs=250;
+};
 struct Frame { uint64_t session=0, sequence=0, openUs=0; Eye eye=Eye::Left; };
 enum class ActionKind : uint8_t { Open, Close };
 struct Action { ActionKind kind; Eye eye; uint64_t sequence, scheduledUs; };
@@ -52,6 +59,8 @@ public:
     static constexpr size_t capacity=16;
     static constexpr uint64_t minLeadUs=500, horizonUs=50000;
     static constexpr uint64_t maxLateUs=100, watchdogUs=100000, guardUs=250;
+    static constexpr uint32_t minPeriodUs=4000, maxPeriodUs=33367;
+    static constexpr uint32_t minAperturePeriodUs=4000,maxAperturePeriodUs=10050;
     Result begin(uint64_t session, uint64_t now);
     Result configure(uint64_t session, Config config, uint64_t now);
     Result enqueue(Frame frame, uint64_t now);

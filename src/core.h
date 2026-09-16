@@ -1,7 +1,9 @@
 #pragma once
+#include "lcd_timing.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -24,6 +26,7 @@ inline constexpr double minimumShutterUs = 250.0;
 // that period's eye parity, rather than discarding the cycle with modulo alone.
 inline constexpr double nvidiaBoundaryMarginUs = 1000.0;   // command-to-boundary distance stays in [margin, period-margin]
 inline constexpr double nvidiaDelayCenterUs = 1300.0;      // X sits in [center-margin, center+margin]
+inline constexpr double nvidiaDelayMinUs = 300.0;          // preferred X: the shortest delay leaves the most of the period to the shutter
 inline constexpr double nvidiaSequenceGuardUs = 1000.0;    // tokens + close delay + safety after X + shutter
 inline constexpr double nvidiaLockBiasUs = 6.0;            // firmware adds 73 ticks (12 MHz) per command in steady state
 struct NvidiaSchedule { double boundaryUs; double delayUs; double openAfterCommandUs; };
@@ -31,7 +34,20 @@ double nvidiaBandCorrectionUs(double refresh);
 NvidiaSchedule nvidiaSchedule(double refresh, double phaseUs);
 double nvidiaLegacyPhaseUs(double refresh, double registerPhaseUs);
 enum class Eye : int { Left, Right, Black };
+// Stereo sequence: each eye is held for `hold` refreshes and followed by `black` black refreshes,
+// so the cycle is 2 x (hold + black) refreshes and each eye gets refresh / cycle new frames per
+// second. The three named values are the classic patterns; makeSequence() encodes any other
+// hold/black pair (hold 1..4, black 0..7, hold + black <= 8) as 16 + (hold - 1) * 8 + black.
+// Both eyes always get the same pattern, so the emitter runs at a fixed period.
 enum class Sequence : int { Alternating, BlackInsertion, Repeated };
+Sequence makeSequence(unsigned hold, unsigned black);
+unsigned sequenceHold(Sequence sequence);
+unsigned sequenceBlack(Sequence sequence);
+bool sequenceValid(Sequence sequence);
+// Triggers occur on the last held refresh of each eye. The exposure may use
+// that refresh plus its following black refreshes, never the next eye.
+double apertureWindowHz(double refresh,Sequence sequence);
+std::string sequencePattern(Sequence sequence);   // "L B B R B B"
 enum class Packing : int { SideBySide, TopBottom };
 enum class Encoding : int { SRGB, LinearScRGB, PQ2020 };
 // How the panel lights its rows. A sample-and-hold panel shows every row continuously, so
@@ -39,6 +55,24 @@ enum class Encoding : int { SRGB, LinearScRGB, PQ2020 };
 // black frame insertion, "Motion Clearness", scanning/pulsed backlight) lights the panel
 // only during a pulse after the scan, so the clean window is that pulse.
 enum class Illumination : int { SampleAndHold, Strobed };
+// User-supplied panel family. It does not imply measured rise/fall times or black levels.
+// MiniLED: a QLED / mini-LED set.
+enum class PanelKind : int { Custom, OLED, VA, IPS, MiniLED };
+// Whole-screen conversion (the SpaceWalker / Reality Hub idea): a display is captured, a depth
+// network estimates every pixel's nearness, and both eyes are resampled from the picture with it.
+struct ScreenSettings {
+    float separation=.02f;   // parallax at infinity, fraction of the width (both eyes together)
+    float convergence=.85f;  // nearness at zero parallax: 1 puts the nearest content on the screen, less brings it out
+    float popOut=.5f;        // how far in front of the screen, as a fraction of the separation
+    float smoothing=.5f;     // temporal smoothing of the depth, 0 (none) to 0.95
+    unsigned quality=518;    // longest side of the network input, in pixels
+    unsigned steps=24;       // reprojection search steps per pixel
+    std::string model;       // depth model file (UTF-8 path); empty = the Depth Anything V2 Small in models/
+    double pairRate=120;     // most stereo pairs per second worth drawing (session state)
+    double depthRate=30;     // most pictures per second sent to the network (session state)
+    bool depth=true;         // false: both eyes get the picture unchanged (session state)
+    bool showDepth=false;    // diagnostic: the nearness map instead of the picture (session state)
+};
 struct Settings {
     std::string name = "New calibration";
     std::string displayId;
@@ -73,12 +107,43 @@ struct Settings {
     // for the refresh (microseconds; the timestamp sits inside the blanking interval).
     // Zero until the vblank probe measures it.
     double scanStartUs = 0;
+    // Optional separate model rise time; actual response depends on gray levels, overdrive,
+    // temperature and history. No universal rise/fall ordering is assumed. 0 uses responseUs.
+    double panelRiseUs = 0;
+    PanelKind panelKind = PanelKind::Custom;
+    // Legacy image black lift. This changes encoded image levels, not LCD drive voltages.
+    // It has not been demonstrated to accelerate settling or fix optical crosstalk.
+    float blackFloor = 0;
+    // Experimental uniform reset between eyes, in sRGB code values (not panel voltage).
+    // Zero preserves black insertion. Only deliberate sequence guard slots use this;
+    // pause, startup and loss-of-lock blanking must remain black.
+    float guardLevel = 0;
+    // Legacy approximate ghost subtraction (not LightBoost/backlight control): each
+    // eye's image has the other eye's predicted leak subtracted, row by row, in linear light.
+    // Strength scales the modelled leak (1 = as modelled; raise it if a ghost remains, lower it
+    // if the other eye's image appears as a dark ghost). leakProfile is derived from the model
+    // for the current phase and shutter before every present configuration; it is not saved.
+    bool cancelCrosstalk = false;
+    float cancelStrength = 1;
+    std::array<float, 8> leakProfile{};
+    ScreenSettings screen;
+    LcdTiming lcd;
+    double signalScanUs=0; // current display input timing; not a saved optical measurement
     bool glassesConfirmed = false, eyeConfirmed = false;
     std::string assessment = "Not assessed";
     std::string monitorNotes;
     bool validated = false;
 };
 struct Slot { Eye eye; bool trigger; bool pairBoundary; };
+enum class PanelDrive { Direct, BlackGuard, NeutralGuard, Preload };
+// Explicit experiments, independent of the approximate illumination model.
+void applyPanelDrive(Settings& settings, PanelDrive drive);
+struct PhaseWindow { double beginUs=0, endUs=0; };
+// Measured acceptable PHASE ranges at a fixed shutter, not optical pulse widths.
+// begin > end crosses the cycle boundary; identical endpoints are empty.
+std::vector<PhaseWindow> intersectPhaseWindows(double cycleUs, std::span<const PhaseWindow> windows);
+// Invalidates optical marks when anything affecting the experiment except phase changes.
+std::string opticalCalibrationKey(const Settings& settings);
 unsigned cycleLength(Sequence sequence);
 Slot sequenceSlot(Sequence sequence, uint64_t index, bool swap);
 // DXGI reports the actual display refresh, including composed presentation.
@@ -89,7 +154,11 @@ double phaseCycleUs(double refresh, Sequence sequence);
 double wrapPhase(double phase, double period);
 double wrapSignedPhase(double phase, double period);
 double calibrationMaxShutterUs(double refresh);
+// Widest shutter the schedule can honour at its preferred (shortest) X. Near the two ends of the
+// boundary range X has to grow by up to 2000 us, and the window is then shortened to fit; the
+// effective width for a given phase is nvidiaEffectiveShutterUs.
 double nvidiaMaxShutterUs(double refresh);
+double nvidiaEffectiveShutterUs(double refresh, double phaseUs, double shutterUs);
 // The emitter runs one period per stereo slot pair: one display refresh for Left/Right, two for
 // the four-slot sequences. The shutter may stay open across that whole period, which is how a
 // black-frame sequence recovers its light, so every shutter limit follows this rate, not the
@@ -110,7 +179,7 @@ double bandHeightForShutter(double refresh, Sequence sequence, double scanUs, do
 // collects the eye's own light and the other eye's light; leakage is their ratio. Black
 // frames and repeated frames are handled by the same model, which is why software black
 // frame insertion removes the other eye from the screen during the scan.
-struct PanelTiming { double scanUs=8100, responseUs=200; Illumination illumination=Illumination::SampleAndHold; double strobeStartUs=0, strobeLengthUs=1500; };
+struct PanelTiming { double scanUs=8100, responseUs=200; Illumination illumination=Illumination::SampleAndHold; double strobeStartUs=0, strobeLengthUs=1500; double riseUs=0; };
 struct LeakageEstimate {
     double brightness=0;                    // own light collected / (shutter time x rows), 0..1
     double top=1, center=1, bottom=1, mean=1; // other-eye light / own light per band third and overall
@@ -125,6 +194,33 @@ double bandHeightForLeakage(double refresh, Sequence sequence, const PanelTiming
 // the shutter. In a black-frame sequence a row is lit for one refresh and dark for the rest, so
 // a shutter spanning the scan stagger collects every row's whole lit period without leaking.
 double brightestShutterUs(double refresh, Sequence sequence, const PanelTiming& panel, double bandHeight, double bandCenter, double leakageLimit, double maxShutterUs);
+// The same search, also returning the phase (model origin) at which that shutter met the limit.
+struct BrightestShutter { double shutterUs; double modelPhaseUs; };
+BrightestShutter brightestShutter(double refresh, Sequence sequence, const PanelTiming& panel, double bandHeight, double bandCenter, double leakageLimit, double maxShutterUs);
+// Other-eye light as a fraction of own light for `samples` equal row bands of the stereo area,
+// top to bottom, at this phase and shutter: the per-row leak that crosstalk cancellation
+// subtracts. Each value is clamped to [0, 0.95]; a row that collects no own light reports 0.95.
+std::vector<double> leakageProfile(double refresh, Sequence sequence, const PanelTiming& panel, double bandHeight, double bandCenter, double phaseUs, double shutterUs, unsigned samples);
+// LightBoost mode for a sample-and-hold LCD: Left/Right at the display's own rate, the shutter
+// placed by the model where the panel shows the most of one eye, and the residual leak of the
+// rows still switching cancelled in the image. Chooses the shutter (within [minShutter, maxShutter])
+// that collects the most light with the least leak, sets the phase (model origin) and returns
+// the predicted leak before cancellation.
+struct LightBoostPlan { double shutterUs; double modelPhaseUs; LeakageEstimate predicted; };
+LightBoostPlan planLightBoost(double refresh, const PanelTiming& panel, double bandHeight, double bandCenter, double minShutterUs, double maxShutterUs);
+// Every hold/black sequence up to four refreshes per eye pair, each with the brightest shutter
+// that keeps the mean leak within the limit (minimumShutterUs and a red leak when none does),
+// its best phase (model origin) and the frames per eye per second. The callback gives the
+// emitter's shutter ceiling for an emitter rate.
+struct SequenceOption { Sequence sequence; double framesPerEye; double shutterUs; double modelPhaseUs; LeakageEstimate estimate; };
+// Set panel-family metadata only; preserve measured/entered parameters and image levels.
+void applyPanelKind(Settings& settings, PanelKind kind);
+const char* panelKindName(PanelKind kind);
+// The best pattern whose eye run is `refreshesPerRun` refreshes long (hold + black), so each eye
+// gets refresh / (2 x refreshesPerRun) new frames per second: the clean one (mean leak within the
+// limit) that collects the most light, or the least leaking one when none is clean.
+SequenceOption bestSequenceForRun(double refresh, const PanelTiming& panel, double bandHeight, double bandCenter, unsigned refreshesPerRun, double leakageLimit, const std::function<double(double)>& maxShutterForEmitterHz);
+std::vector<SequenceOption> compareSequences(double refresh, const PanelTiming& panel, double bandHeight, double bandCenter, double leakageLimit, const std::function<double(double)>& maxShutterForEmitterHz);
 // The emitter command is sent at the presentation timestamp of the triggering refresh, which
 // is the eye's first refresh except for Left/Left/Right/Right (second). The model's origin is
 // the start of the active scan: scanStartUs after that timestamp. USB latency delays the

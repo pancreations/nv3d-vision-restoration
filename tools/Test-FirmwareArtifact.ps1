@@ -33,7 +33,7 @@ $stack=[BitConverter]::ToUInt32($bin,256);$reset=[BitConverter]::ToUInt32($bin,2
 if($stack -lt 0x20000000 -or $stack -gt 0x20042000){throw 'Invalid Cortex-M0+ initial stack'}
 if(($reset -band 1) -ne 1 -or $reset -lt 0x10000100 -or $reset -ge (0x10000000+$bin.Length)){throw 'Invalid Cortex-M0+ reset vector'}
 $report=@('PASS RP2040 UF2 headers, family, addresses, payload, padding and footer',
-    'PASS boot2 CRC32 and Cortex-M0+ vectors',"Binary $($bin.Length) bytes; UF2 $($uf2.Length) bytes; $blocks blocks",'NOT FLASHED. Electrical, USB enumeration and optical tests pending.',
+    'PASS boot2 CRC32 and Cortex-M0+ vectors',"Binary $($bin.Length) bytes; UF2 $($uf2.Length) bytes; $blocks blocks",'Artifact checks only. This check does not flash hardware or establish USB/electrical/optical operation.',
     ('SHA256: '+(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Directory 'VisionEmitter.uf2')).Hash))
 $report | Set-Content -LiteralPath (Join-Path $projectRoot 'reports/rp2040-firmware-artifact.txt') -Encoding UTF8
 $report | Write-Output

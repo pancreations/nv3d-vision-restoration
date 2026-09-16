@@ -62,7 +62,9 @@ void GameSync::run(std::stop_token stop){
         }
         // A hook without sequence support presents one Left/Right pair per game frame whatever the
         // profile says, so the emitter and the slot interpretation follow the hook's capability.
-        const bool hookSequences=(snap.hookFlags&sync::HookSequences)!=0;
+        // An older hook with sequence support knows the three classic codes only; encoded hold/black
+        // sequences need HookPatterns as well.
+        const bool hookSequences=(snap.hookFlags&sync::HookSequences)!=0&&(int(settings.sequence)<=2||(snap.hookFlags&sync::HookPatterns)!=0);
         if(!hookSequences&&settings.sequence!=Sequence::Alternating)settings.sequence=Sequence::Alternating;
         if(!configured||lastConfigure<0||configuredSequence!=settings.sequence){emitter_.configure(settings);configured=true;lastConfigure=now;configuredSequence=settings.sequence;}
         local.sequenceLimited=!hookSequences&&sequenceRequested!=Sequence::Alternating;
@@ -70,13 +72,17 @@ void GameSync::run(std::stop_token stop){
         // known the glasses follow the refresh clock alone, so a late game frame changes what the
         // display repeats but never when the emitter switches.
         const bool phaseLocked=hookSequences&&(snap.hookFlags&sync::HookPhaseLocked)!=0;
+        const bool refreshSlots=phaseLocked&&(snap.hookFlags&sync::HookRefreshSlots)!=0;
         const unsigned cycle=cycleLength(settings.sequence);
         if(!phaseLocked||cycle!=phaseSlots){lockedPhase=candidatePhase=-1;phaseVotes=0;phaseSlots=cycle;}
+        // The new output backend schedules absolute refresh slots. A dropped
+        // physical frame must not teach the emitter a new left/right phase.
+        if(refreshSlots){lockedPhase=0;candidatePhase=-1;phaseVotes=0;}
         if(snap.statsValid&&snap.syncQpc){
             clock.observe(snap.syncRefreshCount,double(snap.syncQpc)/qpcFrequency());
             if(snap.presentCount!=lastObserved){
                 lastObserved=snap.presentCount;lastRefresh=snap.presentRefreshCount;
-                if(phaseLocked&&snap.ringHead){
+                if(phaseLocked&&!refreshSlots&&snap.ringHead){
                     int shown=-1;const uint32_t count=std::min<uint32_t>(snap.ringHead,sync::ringSize);
                     for(uint32_t k=0;k<count;k++){auto& r=snap.ring[(snap.ringHead-1-k)%sync::ringSize];if(r.presentId==uint32_t(lastObserved)){shown=r.eye;break;}if(r.presentId<uint32_t(lastObserved))break;}
                     if(shown>=0){

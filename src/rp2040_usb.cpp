@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "rp2040_usb.h"
+#include "rp2040_usb_packet.h"
 #include <Windows.h>
 #include <stdexcept>
 #include <sstream>
@@ -33,7 +34,7 @@ public:
             unsigned char firmware[128]{};const auto firmwareLength=libusb_get_string_descriptor_ascii(handle_,5,firmware,sizeof(firmware));
             if(firmwareLength<=0)throw std::runtime_error("RP2040 firmware build identity missing");
             firmware_.assign(reinterpret_cast<char*>(firmware),size_t(firmwareLength));
-            if(!firmware_.starts_with("VRP1/0.2.0/"))throw std::runtime_error("Unsupported RP2040 firmware version");
+            if(!firmware_.starts_with("VRP1/0.2.0/")&&!firmware_.starts_with("VRP1/0.3.0/")&&!firmware_.starts_with("VRP1/0.4.0/"))throw std::runtime_error("Unsupported RP2040 firmware version");
             libusb_config_descriptor* c=nullptr;
             if(libusb_get_active_config_descriptor(libusb_get_device(handle_),&c)<0||!c)throw std::runtime_error("Cannot inspect RP2040 endpoints");
             bool valid=false;
@@ -45,6 +46,17 @@ public:
             libusb_free_config_descriptor(c);if(!valid)throw std::runtime_error("RP2040 USB endpoint layout mismatch");
             if(libusb_claim_interface(handle_,0)<0)throw std::runtime_error("RP2040 interface is busy or WinUSB binding is unavailable");
             claimed_=true;
+            // A previously cancelled host exchange may have left its reply
+            // queued on the board. Drain only IN, before this client's first
+            // request, so an old reply cannot be mistaken for a new Status.
+            const double drainDeadline=hostMicroseconds()+20000;
+            for(;;) {
+                if(hostMicroseconds()>=drainDeadline)throw std::runtime_error("RP2040 USB IN did not become idle on connect");
+                Packet stale{};int received=0;
+                const int result=libusb_bulk_transfer(handle_,0x81,stale.data(),int(stale.size()),&received,2);
+                if(result==LIBUSB_ERROR_TIMEOUT&&received==0)break;
+                if(result<0&&result!=LIBUSB_ERROR_TIMEOUT)throw std::runtime_error(std::string("RP2040 USB IN drain failed: ")+libusb_error_name(result));
+            }
         }catch(...){libusb_close(handle_);handle_=nullptr;throw;}
     }
     ~UsbLink(){if(handle_){if(claimed_)libusb_release_interface(handle_,0);libusb_close(handle_);}}
@@ -54,11 +66,14 @@ public:
         if(stop.stop_requested())throw std::runtime_error("RP2040 transfer cancelled");
         int count=0;auto outgoing=request;
         int r=libusb_bulk_transfer(handle_,1,outgoing.data(),64,&count,20);
-        if(r<0||count!=64)throw std::runtime_error(std::string("RP2040 USB OUT failed: ")+libusb_error_name(r));
+        if(r<0||count!=64)throw std::runtime_error(std::string("RP2040 USB OUT failed: ")+libusb_error_name(r)+" ("+std::to_string(count)+"/64 bytes)");
         if(stop.stop_requested())throw std::runtime_error("RP2040 transfer cancelled; device watchdog will stop output");
-        Packet incoming{};r=libusb_bulk_transfer(handle_,0x81,incoming.data(),64,&count,20);
-        if(r<0||count!=64)throw std::runtime_error(std::string("RP2040 USB IN failed: ")+libusb_error_name(r));
-        return incoming;
+        return receiveUsbReply([&](Packet& incoming,unsigned timeout){
+            int received=0;
+            const int result=libusb_bulk_transfer(handle_,0x81,incoming.data(),int(incoming.size()),&received,timeout);
+            if(result<0)throw std::runtime_error(std::string("RP2040 USB IN failed: ")+libusb_error_name(result));
+            return size_t(received);
+        },hostMicroseconds,stop);
     }
 };
 }

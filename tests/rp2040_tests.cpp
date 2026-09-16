@@ -52,8 +52,10 @@ void packets() {
 }
 void scheduling() {
     Scheduler s;check(s.begin(0,0)==Result::BadSession,"zero session forbidden");start(s);
-    check(s.configure(1,{6944,1500,1500},0)==Result::BadConfig,"144 Hz not advertised");
-    check(s.configure(1,{4167,1500,1500},0)==Result::BadConfig,"240 Hz not advertised");
+    check(s.configure(1,{6944,1500,1500},0)==Result::Ok,"144 openings/s accepted");
+    check(s.configure(1,{4167,1500,1500},0)==Result::Ok,"240 openings/s accepted");
+    check(s.configure(1,{3999,1500,1500},0)==Result::BadConfig,"faster than supported cadence rejected");
+    check(s.configure(1,{},0)==Result::Ok,"restore 120 Hz for fault cases");
     check(s.configure(1,{8333,0,1500},0)==Result::BadConfig,"zero interval forbidden");
     check(s.configure(1,{8333,8333,1500},0)==Result::BadConfig,"overlong interval forbidden");
     check(s.enqueue({2,1,10000,Eye::Left},0)==Result::BadSession,"foreign epoch rejected");
@@ -101,6 +103,49 @@ void scheduling() {
     }
     check(batch.queued()==0,"batch completely drained");
     std::cout<<"PASS scheduler faults: missed refresh, late alarm, overlap, stale epoch, stop, timeout, overflow\n";
+}
+void slowerCadences() {
+    // Actual display/hold combinations, including fractional TV refresh.
+    for(double interval:{1000000.0/240,1000000.0/144,1000000.0/60,2000000.0/119.88,3000000.0/120,4000000.0/120,2000000.0/60}) {
+        Scheduler s;check(s.begin(1,0)==Result::Ok,"slow session begins");
+        const auto period=uint32_t(std::llround(interval));
+        check(s.configure(1,{period,1500,1250},0)==Result::Ok,"held-eye period accepted");
+        for(uint64_t n=0;n<2400;++n) {
+            const auto open=10000+uint64_t(std::llround(n*interval));
+            check(!s.advance(open-1000).forceIdle,"slow cadence keeps watchdog healthy");
+            const auto eye=n%2?Eye::Right:Eye::Left;
+            check(s.enqueue({1,n+1,open,eye},open-1000)==Result::Ok,"fractional held-eye target accepted");
+            auto a=s.advance(open);check(a.count==1&&a.actions[0].eye==eye,"one open per held eye, no pulse on preload refresh");
+            a=s.advance(open+(n%2?1250:1500));check(a.count==1&&a.actions[0].kind==ActionKind::Close,"per-eye close duration preserved");
+        }
+        check(s.rejected()==0,"no slow cadence faults");
+        check(s.stop().forceIdle,"slow stop flushes session");
+        check(s.begin(2,100000000)==Result::Ok,"restart slow session");
+        check(s.configure(2,{33368,1500,1500},100000000)==Result::BadConfig,"below 30 openings/s rejected");
+    }
+    std::cout<<"PASS LCD cadence: held/black intervals, fractional 119.88 Hz, per-eye widths and watchdog\n";
+}
+void apertureFrames() {
+    for(double hz:{100.,119.88,120.,144.,165.,180.,200.,239.991,240.}) {
+        Scheduler s;check(s.begin(1,0)==Result::Ok,"aperture session");
+        Config c{uint32_t(std::floor(1e6/hz)),500,750,true,1000,2000,250};
+        check(s.configure(1,c,0)==Result::Ok,"frame-anchored aperture accepted");
+        for(uint64_t n=0;n<1200;++n) {
+            const auto frame=10000+uint64_t(std::llround(n*1e6/hz));
+            check(!s.advance(frame).forceIdle,"aperture clock/watchdog healthy");
+            const auto eye=n%2?Eye::Right:Eye::Left;
+            check(s.enqueue({1,n+1,frame,eye},frame)==Result::Ok,"unequal eye phases preserve frame cadence");
+            const auto open=frame+(n%2?2000:1000);auto a=s.advance(open);
+            check(a.count==1&&a.actions[0].kind==ActionKind::Open&&a.actions[0].eye==eye,"opens after correct per-eye settling delay");
+            a=s.advance(open+(n%2?750:500));check(a.count==1&&a.actions[0].kind==ActionKind::Close,"closes inside same refresh");
+        }
+        s.stop();check(s.begin(2,100000000)==Result::Ok,"aperture restart");
+        c.leftOpenUs=c.periodUs-500;
+        check(s.configure(2,c,100000000)==Result::BadConfig,"firmware rejects next-eye exposure");
+        c.leftOpenUs=249;check(s.configure(2,c,100000000)==Result::BadConfig,"firmware enforces start guard");
+        c.leftOpenUs=UINT32_MAX;check(s.configure(2,c,100000000)==Result::BadConfig,"offset overflow rejected");
+    }
+    std::cout<<"PASS frame-anchored LCD aperture: 100-240 Hz, asymmetric eyes, fractional periods and frame guards\n";
 }
 void clocks() {
     ClockMap map;check(!map.estimate(1000,0),"no clock before samples");
@@ -160,6 +205,8 @@ void endpoint() {
         ++request.request;return exchange;
     };
     send(Result::Ok); // hello
+    request.opcode=Opcode::ConfigureAperture;
+    for(unsigned n=0;n<=32;++n)if(n!=24){request.length=uint16_t(n);send(Result::BadLength);}
     request.opcode=Opcode::Configure;request.length=32;send(Result::BadLength);
     request.length=12;auto p=std::span(request.payload);put32(p,8333);put32(p.subspan(4),1500);put32(p.subspan(8),1500);
     send(Result::Ok);
@@ -185,6 +232,6 @@ void endpoint() {
 }
 }
 int main() {
-    try {packets();scheduling();clocks();endpoint();sustained();std::cout<<checks<<" checks passed\n";return 0;}
+    try {packets();scheduling();slowerCadences();apertureFrames();clocks();endpoint();sustained();std::cout<<checks<<" checks passed\n";return 0;}
     catch(const std::exception& e){std::cerr<<"FAIL after "<<checks<<" checks: "<<e.what()<<'\n';return 1;}
 }

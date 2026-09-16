@@ -6,11 +6,44 @@ whole screen was confirmed through the glasses on 2026-09-13, on a Samsung OLED 
 4K 240 Hz in HDR with software black frame insertion. Other displays, refresh rates and
 sequences are not optically verified.
 
-> **What works today:** only side-by-side 3D captured from a window (proven with Dolphin).
-> ReShade capture and the in-game hook do not work. geo-11 and games with native stereo 3D
-> have never been tested.
+> **Game integration:** Geo11 has rendered stereo in Batman and Psychonauts in
+> their original windows; sustained-load timing is being retested. Window capture
+> remains a proven fallback. The old ReShade hook remains nonworking.
 
 Double-click **Launch.cmd** to run `build/bin/Release/VisionRestoration.exe`.
+
+## Live controls
+
+During **fullscreen output**, **Home** shows or hides the complete controls
+menu. This works with SBS sources, AI desktop and the test patterns. The normal
+app window is hidden until fullscreen ends. Opening the menu does not replace
+the source, restart the emitter or resize the output.
+
+All input, profile, display and diagnostic options are available in the menu.
+**Shortcuts** lets you rebind functions, disable individual bindings, or turn
+all fullscreen shortcuts off for gaming. **Outside app** makes a binding work
+while a game or the desktop has focus. Bindings are inactive outside fullscreen
+and persist in `profiles/shortcuts.ini`. The tray icon (or launching `Launch.cmd`
+again) reopens the controls even when shortcuts are disabled. **Tab** remains
+available for normal control navigation.
+
+**Phase**, **Shutter**, **Image brightness**, and **HDR output** are together at
+the top of the main and fullscreen control panels. Drag a slider, Ctrl+click to
+type, or use the phase/shutter minus and plus buttons. Brightness applies live;
+HDR changes the output buffer format while retaining the output window.
+**HDR highlights** controls the brightness test pattern's peak luminance.
+
+Saved manual profiles, including the Dell preload profile, retain their original
+timing mode when loaded. They are no longer automatically converted to guarded
+LCD timing. That mode is optional under **Advanced LCD calibration**. Profile
+loading also restores the saved image brightness and black level.
+
+Stereo shaders are compiled when building the app. Switching between fullscreen
+and preview no longer recompiles them or blocks Stop on shader compilation.
+Stopping the renderer continues servicing synchronous Windows messages, so a
+fullscreen transition cannot deadlock while DXGI waits for the control window.
+AI desktop capture excludes the app's preview, fullscreen output and controls
+in every view, preventing the converted image from capturing itself.
 
 ## Output
 
@@ -43,13 +76,21 @@ Double-click **Launch.cmd** to run `build/bin/Release/VisionRestoration.exe`.
   A mismatched rate blocks stereo startup. It does not change the output mode.
 - **Phase sweep** (Output & timing, or **S** in fullscreen) advances the phase through
   the whole cycle while you watch; **M** marks a phase, **Enter** keeps the current one.
-  The value is drawn in the output. **Software black frame insertion** (checkbox or **B**)
-  switches to Left / Black / Right / Black so no row ever shows the other eye during a
-  scan. It lights each eye on fewer refreshes, so recover the light with **Maximize
-  brightness**: in this sequence the emitter's period is two display refreshes and the
-  shutter may stay open across all of it, which a one-refresh limit had wrongly capped.
-  The **Image brightness** slider spends HDR headroom on what is left. Each eye flashes at
-  a quarter of the refresh rate: 60 per second at 240 Hz, 30 at 120 Hz.
+  The value is drawn in the output. The old subtraction-based LightBoost button has
+  been removed: it did not control the backlight. **Legacy ghost subtraction** remains
+  explicitly experimental and is not enabled by the frame-rate buttons.
+- **Panel experiments** offers direct output, black reset, neutral gray reset and
+  preload/hold sequences with the official NVIDIA emitter. Nine-row optical targets and
+  measured phase ranges let you check both lenses across the whole screen without
+  assumed response times. See [PANEL-EXPERIMENTS.md](PANEL-EXPERIMENTS.md).
+- **Display type** labels the panel family; it no longer fills in guessed response times.
+  **Advanced > Sequence** exposes holds of up to four refreshes and holds with resets.
+  Rate buttons and Compare sequences still use the approximate model, not measurements.
+  Neutral reset is excluded from that model. **LCD black floor** is a legacy image
+  adjustment, not a demonstrated way to accelerate pixels. Use zero for calibration.
+- **Software black frame insertion** gives 60 new frames/eye/s at 240 Hz, 36 at 144 Hz,
+  and 30 at 120 Hz. Pixel persistence may remain on LCDs. **Maximize brightness** is a
+  model-based suggestion; widening the shutter can admit unwanted light.
 - **Illumination** (Advanced > Panel) tells the model whether the panel holds its rows or
   strobes (LightBoost, BFI, Motion Clearness). The Stereo area section predicts the
   other-eye leakage of the current phase for the top, center and bottom; **Suggest phase**
@@ -58,17 +99,12 @@ Double-click **Launch.cmd** to run `build/bin/Release/VisionRestoration.exe`.
   the blanking interval against the presentation timestamps. See
   [docs/TIMING-CALIBRATION.md](TIMING-CALIBRATION.md).
 
-The renderer has no cross-eye blending or image-subtraction path. Version 7
-profiles add the illumination, strobe and scan-start fields; version 6 profiles add
-the stereo area and panel timing; version 5 and older
-profiles omit those controls; older profiles load their timing and scene settings
-while ignoring retired blending fields. The embedded preview uses the actual
-frame-sequential renderer and emitter timing, with no decorative image overlay.
+Profiles now use version 10 for neutral reset. Older profiles retain their timing; old executables cannot read the new version. The separate experimental build keeps its own profile copies beside its EXE.
 
 **Image alignment** stays beside the preview: convergence shifts the eye images
 horizontally, and scene depth changes the built-in stereo scene's camera separation.
 Both apply live. Diagnostic eye-isolation targets stay fixed.
-**Sources & games** selects stereo images, window capture, Spout or the game hook. Only window capture of side-by-side output is proven to work.
+**Sources & games** selects stereo images, window capture or the whole screen converted with AI depth. Spout and Blender viewport inputs have been removed. The game-output controls connect existing Geo11 fixes; broader API coverage remains in development.
 **Profiles** saves named setups; timing and scene changes also autosave.
 **Diagnostics** reports presentation/USB timing and runs checks of the rendered
 pixels. **Advanced** holds per-eye timing, sequences, emitter connection and modes.
@@ -78,41 +114,111 @@ They do not establish that all visible leakage through a glasses lens is gone.
 See the [emitter timing fixes](EMITTER-TIMING-FIX.md) and
 [presentation synchronization](PRESENTATION-SYNC.md) for implementation details.
 
-## Games (in-game hook)
+## Whole screen in 3D (AI depth)
 
-> **The in-game hook does not work and has never worked.** This section documents the design and code as they stand. The only way to get a game into 3D today is to set it to side-by-side output and capture its window under **Sources & games**. ReShade capture does not work either. The geo-11 route below has never been tested.
+> Built 2026-09-15 and checked only on the desktop without glasses: the capture, the depth
+> network and the eye images work (`--screen-test`). Whether it looks right through the
+> glasses, and whether the network's GPU work disturbs the shutter timing, is not yet verified.
 
-Leave the app open. A game with the hook installed takes over the glasses automatically and releases them when it exits, the way the NVIDIA driver did. `VisionGameHook.addon64` is a ReShade add-on that runs inside the game: each game frame it presents the profile's whole sequence (Left/Right, Left/Black/Right/Black or Left/Left/Right/Right) on the game's own swap chain, one slot per refresh, and reports DXGI present statistics through shared memory. The app maps those presents to refreshes and times the emitter with the current profile. Nothing is captured.
+**Sources & games > Input > Whole screen (AI depth)** converts everything on a display into 3D,
+the way Leia's SpaceWalker and Samsung's Reality Hub do: the display is captured, a depth
+network (Depth Anything V2 Small, through ONNX Runtime on DirectML) estimates the depth of every
+pixel, and both eyes are resampled from the picture with that depth. The network runs in its own
+process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues behind the presenter.
 
-The hook handles two kinds of game:
+- **Start screen 3D** captures the chosen display and lays the stereo output over the output
+  display as a click-through window: mouse and keyboard go through to
+  the desktop, and Windows draws the cursor above it at screen depth. The overlay is hidden from
+  screen capture so it never captures itself. **Ctrl+Alt+F8** stops it; **Ctrl+Alt+PageUp /
+  PageDown** change the depth strength, **Ctrl+Alt+Home / End** move the screen plane, and
+  **Ctrl+Alt+Insert** switches between 2D and 3D while the overlay is up. The controls under
+  **Sources & games** stay clickable through the overlay.
+- **Start source** alone feeds the conversion to the 3D preview and the fullscreen output instead.
+- **Depth strength** is the parallax at infinity as a share of the screen width (2 % default).
+  **Screen plane** is the nearness that sits on the screen: 1 keeps everything behind the glass,
+  lower values bring the nearest content out, limited by **Pop-out limit**. **Depth smoothing**
+  averages the network's depth over time. **Network input** trades speed for detail (518 px is
+  about 5 ms per depth map on an RTX 5070 Ti; the map is refreshed up to 30 times a second and the
+  eyes are redrawn for every new desktop frame). **Show depth map** shows what the network sees:
+  brighter is nearer, mid grey is the screen plane.
+- The depth map is a few hundred pixels across and sampled bilinearly, so depth edges are soft
+  over about 7 screen pixels; a moving edge also lags the picture by one network run. Guided
+  upsampling of the depth to the picture's edges is the next step if that shows.
+- **Setup:** `tools/Get-Dependencies.ps1` downloads ONNX Runtime, DirectML and the Small model
+  (about 50 MB, into `models/`), and `build.ps1` then builds `VisionDepth.exe`.
+- **Stronger models for films.** `tools\Get-DepthModel.ps1 -Size base` or `-Size large` fetches the
+  bigger Depth Anything V2 models into `models/`; pick one under **Model** (a change restarts the
+  helper while the picture stays up; the choice is saved with the profile). **Choose model...**
+  accepts any other ONNX depth model with an NCHW RGB input. Measured on an RTX 5070 Ti at the
+  518 px input, with the app running at the same time:
 
-- **Games that render both eyes** (Direct3D 11). Dolphin with Backend = Direct3D 11 and Stereoscopic 3D Mode = Side-by-Side, or geo-11 with side-by-side output. This is true two-camera stereo; the hook only splits the halves.
-- **Games that render one camera** (Direct3D 12, for example GTA V Enhanced). The hook finds the game's depth buffer and resamples both eyes from the finished frame. Every visible surface gets its correct depth, but both eyes come from one camera position: what the camera could not see is filled from the background beside it, and glass, smoke and the HUD take the depth of whatever is behind them.
+  | Model | Per depth map | Size | License | Use |
+  |---|---|---|---|---|
+  | Small (default) | 5 ms | 50 MB | Apache-2.0 | games, desktop, anything moving fast |
+  | Base | 16 ms | 195 MB | CC-BY-NC-4.0 | films and video: finer edges, small objects |
+  | Large | 38 ms | 670 MB | CC-BY-NC-4.0 | films where the GPU has nothing else to do |
 
-`ReShade.ini` in the game folder chooses between them with `[VISION] StereoSource=auto|packed|depth`. Auto means packed on Direct3D 11 and depth on Direct3D 12.
+  The network never takes more than half of the GPU: it runs at most **Depth updates per
+  second** times a second and never more often than twice its own run time, so Large refreshes the
+  depth about 13 times a second, which is fine for a film and too slow for a fast game. Watch
+  **Diagnostics > Slips** after choosing a bigger model: slipped refreshes there mean the network's
+  GPU bursts are delaying the shutter timing, and the answer is a smaller model or a lower rate.
+- **Check without glasses:** `VisionRestoration.exe --screen-test 10` converts the first display
+  for ten seconds without any overlay or emitter, and writes `reports/screen-test.txt` with the
+  timings, `reports/screen-sbs.png` (both eyes) and `reports/screen-depth.png` (the depth view).
+  `--display N` picks another display.
 
-While the game has focus:
+## Games (existing Geo11 fixes)
 
-| Keys | Action |
-| --- | --- |
-| Ctrl+Shift+PageUp / PageDown | Depth strength (separation at infinity, percent of the screen width) |
-| Ctrl+Shift+Home / End | Convergence. Home brings the screen plane nearer, so less comes out of the screen; End pushes it away, so more comes out |
-| Ctrl+Shift+Insert | 2D / 3D, with the glasses still running |
-| Ctrl+Shift+Delete | Depth defaults |
-| Ctrl+Shift+F8 | Diagnostics: original image, left eye only, right eye only, depth view (screen depth light grey, sky black, twice as near white) |
-| Ctrl+Alt+Up/Down, Left/Right, X | Phase, shutter, swap eyes; Save in Profiles keeps them |
+Leave Vision Restoration open with the calibrated display and emitter selected.
+The existing fix renders both eyes; our adapter presents them in the game's own
+window. Mouse, keyboard and controller input stay with the game.
 
-Depth settings are written to the game's `ReShade.ini` at once.
+1. Install the suggested Geo11-compatible fix using its instructions or 3D Fix
+   Manager's profile. Follow its API and graphics-setting requirements.
+2. Close the game. Choose **Sources & games > Connect existing stereo fix...**
+   and select the actual rendering executable, sometimes inside `Binaries`.
+3. Launch normally. The app activates glasses timing for the foreground connected
+   game. Stop any separate fullscreen app preview first.
+4. Use the mod's own controls for depth, convergence, HUD and shader corrections.
 
-On Direct3D 12 each game frame is presented as one whole sequence inside the game's own Present, so the game runs at the display rate divided by the sequence length (60 fps at 240 Hz with Left/Black/Right/Black). There is no refresh filler on Direct3D 12. A frame that takes longer repeats its last slot, which is black in Left/Black/Right/Black. A game that counts its own presents instead of asking for the current back buffer (Dolphin's D3D12 backend) is detected and left in 2D.
+The same connector supports x86 and x64. It preserves the community renderer and
+shader files. Closing the host returns output to mono; hooks remain until exit.
 
-Install with **Games > Install hook next to a game...**. It copies the ReShade add-on build as `dxgi.dll`. If OptiScaler already owns `dxgi.dll`, it copies ReShade as `ReShade64.dll` and sets `LoadReshade=true` in `OptiScaler.ini` instead. Then it copies the add-on and writes a minimal `ReShade.ini`. ReShade's add-on installer must have been run once on the PC. Do not enable ReShade effects with the hook.
+**Before updating or removing a community fix**, close the game and choose
+**Disconnect stereo output...**. This restores previous renderer/output settings,
+retaining unrelated settings and later depth tuning. The backup directory is
+`VisionRestoration.OutputBackup` beside the game EXE.
 
-### GTA V Enhanced
+### Tested games and troubleshooting
 
-- Play story mode with BattlEye off: Steam launch option `-nobattleye`. GTA Online is unavailable while it is off.
-- In the game's graphics settings, turn VSync on and DLSS Frame Generation off. DLSS, the DLSS 5 Neural Rendering mod and HDR can stay on.
-- If the scene looks inside out or flat, press Ctrl+Shift+F8 until the depth view appears. Near objects should be bright and the sky black. `[VISION] DepthReversed=0` or `1` overrides the automatic detection.
+- **Batman: Arkham City GOTY:** DX11 x86, generic Geo11 0.7.11. User confirmed
+  stable 3D and normal controls. Bloom/alpha defects remain; this test did not
+  install a Batman-specific shader fix.
+- **Psychonauts 2:** DX11 x64, Universal UE4 Fix 9.13 / Geo11 0.7.11, linked by
+  local 3D Fix Manager profile 1306. ReShade was removed. The user resolved double
+  vision with the mod. Recurring flashing persisted after both scheduling and
+  fixed-refresh-slot updates. A GPU completion repair is installed; gameplay
+  confirmation is pending.
+- **SteamVR starts unexpectedly:** this output route does not need SteamVR.
+  The tested Katanga edition of 3D Fix Manager repeatedly initialized OpenVR,
+  even with its saved VR mode disabled. Exit that manager after installing fixes,
+  leave Vision Restoration open, and launch the game normally.
+- **Double images or uncomfortable depth:** check the fix's separation and
+  convergence controls. Shader defects and glasses alignment need different fixes.
+- **Black flashes or lost stereo:** record the scene and `VisionStereo11.log`
+  beside the game, plus the app's `reports/session.log`. Short clean samples do
+  not establish stability through an entire game session.
+- **Fix not detected:** the connector needs Geo11 with `force_stereo=2`. An old
+  NVIDIA-driver-dependent Helix/3Dmigoto fix needs a compatible renderer first.
+  Select the game executable rather than its launcher.
+- **Proxy conflict:** the connector leaves the installation unchanged. That
+  wrapper chain needs explicit compatibility work.
+
+Native NVAPI stereo, DX9/10, native DX12 and native media-player integration need
+separate backends. The old ReShade hook remains nonworking; historical notes are
+in [adapters/README.md](../adapters/README.md). Window capture and AI desktop remain.
+See [runtime documentation](../runtime/README.md) for implementation and test scope.
 
 ## Build and check
 
@@ -129,6 +235,6 @@ Start-Process .\build\bin\Release\VisionRestoration.exe --probe -Wait
 Start-Process .\build\bin\Release\VisionRestoration.exe --vblank -Wait
 ```
 
-CTest includes core tests and an integration test using the installed GPU and a local Spout sender. It makes no emitter writes or display-mode changes. `--gpu-test` uses WARP; `--smoke-test` uses the actual GPU and writes an image of the application's own UI. These checks do not establish optical performance.
+CTest includes core tests and an integration test using the installed GPU and stereo image fixtures. It checks retained GPU frames across source restart/stop and HDR output format changes without physical emitter writes or display-mode changes. `--gpu-test` uses WARP; `--smoke-test` uses the actual GPU and writes an image of the application's own UI. These checks do not establish optical performance.
 
 Original application code is provided under GPL-3.0-or-later; preserve the upstream notices and licenses. Proprietary firmware is not bundled.

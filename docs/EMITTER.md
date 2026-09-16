@@ -1,6 +1,6 @@
 # Connecting the actual emitter
 
-**Hardware update 2026-09-12:** the original NVIDIA emitter has now arrived and is the primary path again; the RP2040 board is still in transit ([RP2040 DIY preparation](RP2040.md) remains available). Do not use NVIDIA RAM firmware extraction/upload to flash an RP2040.
+**Hardware update 2026-09-15:** both emitters have arrived. The RP2040 is flashed, its approved WinUSB driver is installed, and the app's connection check passes. A ten-second 120 Hz command test recorded 1200 opens and closes; the user subsequently confirmed good OLED 120 Hz stereo. LCD/QLED separation and OLED 240 Hz still need optical testing. See [RP2040 setup and lower-refresh experiments](RP2040.md). The instructions below describe the original NVIDIA emitter; do not use its RAM firmware loader to flash an RP2040.
 
 With no driver, Windows lists the emitter as **`USB\VID_0955&PID_7003`**, bus description "NVIDIA stereo controller", problem code 28. The app uses live Windows PnP discovery to find that driverless boot identity; `0955:0007` is the runtime identity after firmware upload.
 
@@ -41,3 +41,16 @@ A dedicated worker handles USB; bulk transfers have a 20 ms timeout and stop can
 At startup, use equal 1500 µs durations and phase zero only as exploratory defaults. They are not claimed to fit either display. The application predicts presentation time and submits the USB eye command at that deadline. Feedback detects missed predictions; USB latency and optical timing remain unmeasured.
 
 Do not install a legacy graphics driver or flash persistent firmware. The loader only supports the upstream volatile RAM record format and CPU reset/release addresses.
+
+
+## Schedule change 2026-09-14: shortest X first
+
+`nvidiaSchedule` used to hold X at 1300 us and move the boundary distance; X only left its
+centre when the boundary would leave [1000, period - 1000]. The window could therefore never be
+wider than period - 2300 - band correction - 1000 us guard, which at the 120 Hz emitter rate
+of a four-slot sequence is 4980 us, less than a slow panel's refresh plus scan. The schedule
+now starts from X = 300 us and moves the boundary; X grows only when the boundary would leave
+its range (over about a quarter of the phase circle, by up to 2000 us), and there the shutter
+is shortened to fit the period (`nvidiaEffectiveShutterUs`; the Live tab reports it). The
+requested window start is unchanged for every phase, so tuned profiles keep their optical
+position; only the split between boundary distance and X differs.

@@ -1,5 +1,12 @@
 # Fullscreen stereo on 120 Hz displays
 
+> Audit correction, 2026-09-14: the numerical panel response/scan values and exclusive
+> attribution to the panel below are historical hypotheses, not independently established
+> optical measurements. Successful USB transfers and stable DXGI statistics cannot rule
+> out lens latency, emitter phase error, panel buffering or camera artifacts. The formula
+> is a simplified sample-and-hold bound; it does not describe all BFI/strobed cases.
+> Use [PANEL-EXPERIMENTS.md](PANEL-EXPERIMENTS.md) for the current evidence and procedure.
+
 Written 2026-09-13 after fullscreen output failed to fuse on both the Hisense U6 Pro
 and the Samsung G80SD while the embedded preview window fused on both. The session
 log for those fullscreen runs shows the presenter locked in direct flip at the

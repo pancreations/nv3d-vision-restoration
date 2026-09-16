@@ -14,6 +14,7 @@ public:
     ~Surface();
     void create(HWND window,const LUID* adapter,bool useHDR);
     void resize(unsigned w,unsigned h);
+    void setHdr(bool useHDR);
     void bind();
 };
 struct RenderStatus {
@@ -57,4 +58,8 @@ private:
 };
 bool runGpuSelfTest(const std::filesystem::path& reportDirectory);
 void saveSurfacePng(Surface& surface,const std::filesystem::path& path);
+// Writes an 8-bit or FP16 RGBA/BGRA texture as PNG (FP16 is clamped and sRGB encoded).
+void saveTexturePng(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11Texture2D* texture,const std::filesystem::path& path);
+// Opens a published stereo pair on the given adapter and writes it as PNG (diagnostics).
+void saveSharedFramePng(const StereoFrame& frame,const LUID& adapter,const std::filesystem::path& path);
 }

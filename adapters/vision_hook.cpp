@@ -195,7 +195,7 @@ void publish(SwapState& st,IDXGISwapChain* native,bool signal){
     sh->gamePid=GetCurrentProcessId();sh->gameHeartbeatQpc=qpcRaw();sh->hwnd=reinterpret_cast<uint64_t>(st.chain->get_hwnd());
     sh->api=st.dev->get_api()==device_api::d3d11?vision::sync::ApiD3D11:st.dev->get_api()==device_api::d3d12?vision::sync::ApiD3D12:vision::sync::ApiUnknown;
     sh->width=st.width;sh->height=st.height;sh->backBuffers=st.chain->get_back_buffer_count();sh->format=uint32_t(st.fmt);sh->active=st.active?1:0;
-    sh->frames=st.frames;sh->nativePresents=st.nativePresents;sh->presentErrors=st.errors;sh->hookFlags=uint32_t(vision::sync::HookSequences)|(st.d3d12?uint32_t(vision::sync::HookPhaseLocked):0u);
+    sh->frames=st.frames;sh->nativePresents=st.nativePresents;sh->presentErrors=st.errors;sh->hookFlags=uint32_t(vision::sync::HookSequences)|uint32_t(vision::sync::HookPatterns)|(st.d3d12?uint32_t(vision::sync::HookPhaseLocked):0u);
     DXGI_FRAME_STATISTICS stats{};if(native&&SUCCEEDED(native->GetFrameStatistics(&stats))){
         sh->presentCount=stats.PresentCount;sh->presentRefreshCount=stats.PresentRefreshCount;sh->syncRefreshCount=stats.SyncRefreshCount;sh->syncQpc=stats.SyncQPCTime.QuadPart;sh->statsValid=1;
         IDXGISwapChainMedia* media=nullptr;if(SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&media)))){DXGI_FRAME_STATISTICS_MEDIA fm{};if(SUCCEEDED(media->GetFrameStatisticsMedia(&fm)))sh->composed=(fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED||fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE)?1:0;media->Release();}
@@ -607,7 +607,7 @@ void onStereoPresent(effect_runtime* runtime){
     if(st.blocked){publish(st,native,false);return;}
     const int packing=sh->packing;const bool swapHalves=sh->swapHalves!=0;
     if(!st.depthMode&&packing!=0&&packing!=1){fail(st,"Unsupported stereo packing; choose side-by-side or top/bottom");publish(st,native,true);return;}
-    const int sequence=sh->sequence>=0&&sh->sequence<=2?sh->sequence:0;const unsigned slots=vision::sync::slotsPerFrame(sequence);
+    const int sequence=vision::sync::sequenceKnown(sh->sequence)?sh->sequence:0;const unsigned slots=vision::sync::slotsPerFrame(sequence);
     if(g_owner!=st.chain){g_owner=st.chain;if(st.d3d12)vision::hook::depth::watchBackBuffers(st.chain);}
     if(st.fillerReady&&!st.d3d12)startFiller();
     const float convergence=std::clamp(sh->convergenceMicrounits,-50000,50000)/1000000.f;

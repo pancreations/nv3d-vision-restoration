@@ -1,4 +1,4 @@
-> **Status 2026-09-14:** nothing in this folder works. The in-game hook (`VisionGameHook`) has never worked, and ReShade capture (`VisionStereoSpout`) does not work. The notes below are development history, including results that were only software checks. The only proven way to show a game in 3D is window capture of side-by-side output.
+> **Status 2026-09-15:** the `VisionGameHook` ReShade experiment below remains nonworking. The current Geo11 adapter lives in [runtime/](../runtime/README.md), with x86/x64 loading and reversible established-fix connection. Batman and Psychonauts have rendered stereo through it; sustained-load flashing is being retested. The notes below are historical software experiments, not evidence of native DX12 or broad game support. Spout and Blender inputs were removed.
 
 # Direct3D 12 and depth-based stereo (GTA V Enhanced) — 2026-09-14
 

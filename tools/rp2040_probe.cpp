@@ -11,16 +11,17 @@ int main(int argc,char** argv) {
         if(mode!="--list"&&mode!="--clock"){std::cerr<<"Usage: vision_rp2040_probe [--list | --clock]\nBoth modes are read-only; no IR commands or flashing.\n";return 1;}
         auto devices=discoverUsb();
         for(auto& d:devices)std::cout<<unsigned(d.bus)<<':'<<unsigned(d.address)<<' '<<d.label<<'\n';
-        if(devices.empty()){std::cout<<"No Vision RP2040 firmware device found. This is expected before the board is connected and flashed.\n";return mode=="--list"?0:2;}
+        if(devices.empty()){std::cout<<"No accessible Vision RP2040 firmware device found. Check the board's firmware and WinUSB binding.\n";return mode=="--list"?0:2;}
         if(mode=="--list")return 0;
         if(devices.size()!=1)throw std::runtime_error("Connect only the emitter being tested before running --clock");
         auto link=openUsb(devices[0].bus,devices[0].address);Client client(*link,hostMicroseconds);client.inspect();
+        std::cout<<"Identity: "<<link->identity()<<"\nFirmware: "<<link->firmwareVersion()<<"\nLCD cadence capability: "<<(client.status().extendedCadence?"yes":"no (firmware update needed)")<<"\nFrame aperture capability: "<<(client.status().aperture?"yes":"no (0.4.0 update needed)")<<"\nFast cadence capability: "<<(client.status().fastCadence?"yes":"no (0.4.0 update needed)")<<"\nActive session: "<<client.status().session<<'\n';
         std::vector<double> rtt;unsigned usable=0;
         for(unsigned i=0;i<200;++i){if(client.sampleClock())++usable;rtt.push_back(client.status().roundTripUs);std::this_thread::sleep_for(std::chrono::milliseconds(5));}
         std::sort(rtt.begin(),rtt.end());auto status=client.status();
         std::cout<<"Boot ID: "<<status.bootId<<"\nClock samples usable: "<<usable<<"/200\nUSB RTT us p50/p95/max: "<<rtt[100]<<'/'<<rtt[190]<<'/'<<rtt.back()<<"\nLast clock uncertainty us: "<<status.uncertaintyUs<<"\n";
         auto diagnostic=client.diagnostics();auto p=std::span(diagnostic.payload);
-        std::cout<<"Device open/close commands: "<<get64(p.subspan(8))<<'/'<<get64(p.subspan(16))<<"\nLast device fault: "<<get64(p.subspan(24))<<"\nRead-only probe finished. No shutter test performed.\n";
+        std::cout<<"Device open/close commands: "<<get64(p.subspan(8))<<'/'<<get64(p.subspan(16))<<"\nRejected commands: "<<get32(p.subspan(4))<<"\nLast device fault: "<<get64(p.subspan(24))<<"\nClock ready: "<<(status.clockReady?"yes":"no")<<"\nRead-only probe finished. No shutter test performed.\n";
         return status.clockReady?0:2;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

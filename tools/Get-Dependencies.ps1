@@ -15,17 +15,25 @@ $null = New-Item -ItemType Directory $temp
 # Target folder names are the paths CMakeLists.txt expects. Flat archives have no top-level folder.
 $deps = @(
     @{ Name = 'Dear ImGui v1.91.9b'; Url = 'https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b.zip'; Target = 'imgui-1.91.9b'; Check = 'imgui.cpp' }
-    @{ Name = 'Spout2 SDK 2.007.017'; Url = 'https://github.com/leadedge/Spout2/archive/refs/tags/2.007.017.zip'; Target = 'Spout2-master'; Check = 'SPOUTSDK\SpoutDirectX\SpoutDX\SpoutDX.cpp' }
     @{ Name = 'ReShade v6.8.0 add-on API headers'; Url = 'https://github.com/crosire/reshade/archive/refs/tags/v6.8.0.zip'; Target = 'reshade-main'; Check = 'include\reshade.hpp' }
+    @{ Name = 'MinHook v1.3.4'; Url = 'https://github.com/TsudaKageyu/minhook/archive/refs/tags/v1.3.4.zip'; Target = 'minhook-1.3.4'; Check = 'include\MinHook.h' }
     @{ Name = 'libusb 1.0.30 (Windows binaries)'; Url = 'https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.7z'; Target = 'libusb'; Check = 'VS2022\MS64\dll\libusb-1.0.dll'; Flat = $true }
+    # Whole-screen AI depth: ONNX Runtime's DirectML build and DirectML itself, as NuGet packages (zip archives).
+    @{ Name = 'ONNX Runtime 1.22.1 (DirectML build)'; Url = 'https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/1.22.1'; Target = 'onnxruntime'; Check = 'build\native\include\onnxruntime_c_api.h'; Flat = $true; File = 'Microsoft.ML.OnnxRuntime.DirectML.1.22.1.nupkg' }
+    @{ Name = 'DirectML 1.15.4'; Url = 'https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/1.15.4'; Target = 'directml'; Check = 'bin\x64-win\DirectML.dll'; Flat = $true; File = 'Microsoft.AI.DirectML.1.15.4.nupkg' }
 )
+# Depth network for the whole-screen conversion (weights, not code): Depth Anything V2 Small,
+# Apache-2.0, ONNX export by onnx-community. The fp32 export is onnx/model.onnx in the same repository.
+$modelDir = Join-Path $PSScriptRoot '..\models'
+$modelFile = Join-Path $modelDir 'depth-anything-v2-small-fp16.onnx'
+$modelUrl = 'https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx'
 
 try {
     foreach ($dep in $deps) {
         $target = Join-Path $root $dep.Target
         if (-not $Force -and (Test-Path (Join-Path $target $dep.Check))) { Write-Host "Present: $($dep.Name)"; continue }
         Write-Host "Downloading $($dep.Name)"
-        $archive = Join-Path $temp ([IO.Path]::GetFileName($dep.Url))
+        $archive = Join-Path $temp $(if ($dep.File) { $dep.File } else { [IO.Path]::GetFileName($dep.Url) })
         Invoke-WebRequest -UseBasicParsing -Uri $dep.Url -OutFile $archive
         Write-Host "  SHA-256 $((Get-FileHash $archive -Algorithm SHA256).Hash)"
         if (Test-Path $target) { Remove-Item -Recurse -Force $target }
@@ -36,6 +44,13 @@ try {
         if ($dep.Flat) { Move-Item $extract $target }
         else { Move-Item (Get-ChildItem $extract -Directory | Select-Object -First 1).FullName $target }
         if (-not (Test-Path (Join-Path $target $dep.Check))) { throw "$($dep.Name) did not unpack as expected." }
+    }
+    $null = New-Item -ItemType Directory -Force $modelDir
+    if (-not $Force -and (Test-Path $modelFile)) { Write-Host 'Present: Depth Anything V2 Small (ONNX, fp16)' }
+    else {
+        Write-Host 'Downloading Depth Anything V2 Small (ONNX, fp16, about 50 MB)'
+        Invoke-WebRequest -UseBasicParsing -Uri $modelUrl -OutFile $modelFile
+        Write-Host "  SHA-256 $((Get-FileHash $modelFile -Algorithm SHA256).Hash)"
     }
 } finally {
     Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue
