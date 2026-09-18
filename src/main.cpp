@@ -6,11 +6,13 @@
 #include "key_bindings.h"
 #include "gamesync.h"
 #include "stereo_compatibility.h"
+#include "direct_eyes.h"
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <d3dkmthk.h>
 #include <dbghelp.h>
 #include <algorithm>
@@ -176,7 +178,16 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(SUCCEEDED(co))CoUninitialize();return ok?0:1;}
         const std::wstring instanceName=smoke?L"Local\\VisionRestoration.Smoke."+std::to_wstring(GetCurrentProcessId()):L"Local\\VisionRestoration.SingleInstance.9F170E91";
         HANDLE singleInstance=CreateMutexW(nullptr,FALSE,instanceName.c_str());if(!singleInstance)throw std::runtime_error("Cannot create the application instance guard.");
-        if(GetLastError()==ERROR_ALREADY_EXISTS){if(HWND existing=FindWindowW(L"VisionRestorationControl",nullptr)){PostMessageW(existing,trayMessage+1,0,0);SetForegroundWindow(existing);}CloseHandle(singleInstance);if(SUCCEEDED(co))CoUninitialize();return 0;}
+        if(GetLastError()==ERROR_ALREADY_EXISTS){
+            HWND existing=nullptr;
+            // The first process may still be constructing its control window.
+            for(int attempt=0;attempt<30&&!existing;++attempt){existing=FindWindowW(L"VisionRestorationControl",nullptr);if(!existing)Sleep(100);}
+            CloseHandle(singleInstance);
+            if(!existing)throw std::runtime_error("Vision Restoration is already running, but its window is unavailable on this desktop. Close that background instance in Task Manager, then launch again.");
+            if(!PostMessageW(existing,trayMessage+1,0,0))throw std::runtime_error("Windows blocked reopening the existing Vision Restoration window. Close that instance and relaunch with the same permissions.");
+            ShowWindowAsync(existing,SW_RESTORE);SetForegroundWindow(existing);
+            if(SUCCEEDED(co))CoUninitialize();return 0;
+        }
         if(probe){auto displays=enumerateDisplays();Emitter usb;auto devices=usb.discover();std::filesystem::create_directories(workspace()/L"reports");std::ofstream f(workspace()/L"reports/hardware.txt");for(auto& d:displays){f<<d.name<<"\n"<<d.id<<"\nGPU: "<<d.gpu<<"\nMode: "<<d.width<<'x'<<d.height<<" @ "<<d.refresh<<"\nHDR supported/enabled: "<<d.hdrSupported<<'/'<<d.hdrEnabled<<"\n";}for(auto& d:devices)f<<d.description<<"\n";if(devices.empty())f<<"No supported NVIDIA or RP2040 USB emitter enumerated.\n";if(SUCCEEDED(co))CoUninitialize();return 0;}
         if(emitterCheck){
             // Headless USB check: connect to the single supported emitter. NVIDIA boot
@@ -251,12 +262,18 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         auto displays=enumerateDisplays();std::vector<UsbDeviceInfo> devices;StereoSource source;Emitter emitter;Presenter presenter(source,emitter);DisplayModeGuard modeGuard;GameSync gameSync(emitter);if(!smoke)gameSync.start();
         const bool liveUiTest=wcsstr(GetCommandLineW(),L"--ui-live-test")!=nullptr;
         Settings settings;LcdCalibrationUi lcdUi;int requestedTool=-1;int displayIndex=std::max(0,testDisplay),modeIndex=0,deviceIndex=0,step=2,sourceKind=0,windowIndex=0;SourceConfig sourceConfig;std::vector<std::pair<HWND,std::string>> windows;
+        if(!smoke){sourceKind=5;sourceConfig.kind=SourceKind::DirectEyes;}
         int screenDisplayIndex=0;sourceConfig.depthHelper=executableDirectory()/L"VisionDepth.exe";sourceConfig.depthModel=findDepthModel();sourceConfig.depthLog=workspace()/L"reports"/L"depth-helper.log";
         ControlMenu controlMenu(controlWindow,smoke);
         KeyBindings keyBindings(controlWindow,smoke?std::filesystem::path{}:workspace()/L"profiles/shortcuts.ini",dispatchShortcut);shortcuts=&keyBindings;
         NOTIFYICONDATAW tray{sizeof(tray)};tray.hWnd=controlWindow;tray.uID=1;tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;tray.uCallbackMessage=trayMessage;tray.hIcon=LoadIconW(nullptr,IDI_APPLICATION);wcscpy_s(tray.szTip,L"Vision Restoration - show controls / enable shortcuts");if(!smoke)Shell_NotifyIconW(NIM_ADD,&tray);
         bool outputEmbedded=false;RECT previewRect{0,0,640,360},placedPreviewRect{};
-        bool outputPassThrough=false,screenOutput=false;
+        bool outputPassThrough=false,screenOutput=false;HWND outputGame=nullptr;
+        std::filesystem::path selectedGame;
+        compatibility::Inspection gameInfo;
+        bool gamePrepared=false,preparedSource=false;HANDLE preparedProcess=nullptr;DWORD preparedPid=0;
+        double nextGameScan=0;std::string prepareStatus="Not prepared";
+        auto cancelPreparation=[&]{gamePrepared=false;preparedSource=false;if(preparedProcess)CloseHandle(preparedProcess);preparedProcess=nullptr;preparedPid=0;prepareStatus="Not prepared";};
         // Phase sweep: the phase advances slowly through the whole cycle while the viewer watches
         // through the glasses and marks where the image is cleanest or brightest.
         struct Sweep{bool active=false;double origin=0,start=0,lastStep=0,secondsPerCycle=30;std::vector<double> marks;} sweep;
@@ -278,7 +295,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         }
         auto pattern=[&]{if(sourceKind!=0)return 3;if(settings.lcd.enabled&&step==6)return settings.lcd.target?8+settings.lcd.target:7;return step<3?step:step==3?4:step+1;};
         auto restoreControls=[&]{fullscreenMode=false;keyBindings.activate(false);controlMenu.leaveFullscreen();};
-        auto stopOutput=[&]{restoreControls();lcdUi.sweeping=false;opticalMarks.fill(0);opticalKey.clear();bool wasFullscreen=outputWindow&&!outputEmbedded&&!presenter.status().preview;sweep.active=false;presenter.showPhase(false);presenter.stop();gameSync.enable(true);paused=false;if(outputWindow){DestroyWindow(outputWindow);outputWindow=nullptr;}outputEmbedded=false;bool keepFocus=outputPassThrough;outputPassThrough=false;screenOutput=false;if(!smoke&&wasFullscreen&&!keepFocus){ShowWindow(controlWindow,SW_RESTORE);SetForegroundWindow(controlWindow);}};
+        auto stopOutput=[&]{restoreControls();lcdUi.sweeping=false;opticalMarks.fill(0);opticalKey.clear();bool wasFullscreen=outputWindow&&!outputEmbedded&&!presenter.status().preview;sweep.active=false;presenter.showPhase(false);presenter.stop();gameSync.enable(true);paused=false;if(outputWindow){DestroyWindow(outputWindow);outputWindow=nullptr;}outputEmbedded=false;bool keepFocus=outputPassThrough;outputPassThrough=false;screenOutput=false;outputGame=nullptr;if(!smoke&&wasFullscreen&&!keepFocus){ShowWindow(controlWindow,SW_RESTORE);SetForegroundWindow(controlWindow);}};
         auto clampTiming=[&]{if(!displays.empty())settings.signalScanUs=displays[displayIndex].scanUs;double p=periodUs(settings.refresh);auto emitterState=emitter.status();settings.phaseUs=emitterState.scheduled&&emitterState.firmwareVersion.starts_with("VRP1/0.2.0/")?wrapSignedPhase(settings.phaseUs,p):wrapPhase(settings.phaseUs,phaseCycleUs(settings.refresh,settings.sequence));double maximum=emitterState.scheduled?calibrationMaxShutterUs(settings.refresh):nvidiaMaxShutterUs(sequenceEmitterHz(settings.refresh,settings.sequence));settings.leftUs=std::clamp(settings.leftUs,minimumShutterUs,maximum);settings.rightUs=std::clamp(settings.rightUs,minimumShutterUs,maximum);
             settings.imageGain=std::clamp(settings.imageGain,1.f,8.f);
             settings.bandHeight=std::clamp(settings.bandHeight,.1f,1.f);settings.bandCenter=std::clamp(settings.bandCenter,settings.bandHeight/2,1-settings.bandHeight/2);
@@ -398,7 +415,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             // A single owner controls the emitter while either app output is open.
             gameSync.enable(false);
             // Screen conversion already establishes its screen plane; an extra shift would misalign the mouse.
-            Settings presented=active;if(overlay)presented.convergence=0;
+            Settings presented=active;if(screen)presented.convergence=0;
             try{presenter.start(outputWindow,d,presented,sideBySide,pattern());}catch(...){stopOutput();throw;}
             if(overlay)ShowWindow(outputWindow,SW_SHOWNOACTIVATE);else{ShowWindow(outputWindow,SW_SHOW);if(!embedded)SetForegroundWindow(outputWindow);}
             fullscreenMode=!embedded&&(fullscreen||screen||(!sideBySide&&!overlay));
@@ -406,8 +423,66 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             notice=screen?"The whole display is on the glasses in 3D; mouse and keys go through to the desktop. Ctrl+Alt+F8 stops. Ctrl+Alt+PageUp/PageDown: depth strength, Ctrl+Alt+Home/End: screen plane, Ctrl+Alt+Insert: 2D/3D.":embedded?"Live 3D preview: adjust phase, shutter and convergence while watching through the glasses.":sideBySide?"2D inspection of the separate eye images.":"Fullscreen stereo. Escape returns to the controls.";
         };
         auto startFullscreenOutput=[&]{const auto current=presenter.status();startOutput(smoke||(current.running&&current.preview),false,nullptr,false,true);};
+        auto startGameOutput=[&]{
+            const HWND game=sourceConfig.window;
+            if(sourceKind!=5||!IsWindow(game))throw std::runtime_error("Select a running game's stereo provider first.");
+            DWORD pid=0;GetWindowThreadProcessId(game,&pid);
+            if(pid!=sourceConfig.directChannel||!direct::available(pid))throw std::runtime_error("The selected game's stereo provider is not available.");
+            RECT rect{};GetClientRect(game,&rect);MapWindowPoints(game,nullptr,reinterpret_cast<POINT*>(&rect),2);
+            if(IsIconic(game)||rect.right<=rect.left||rect.bottom<=rect.top)throw std::runtime_error("Restore the game window before starting 3D.");
+            if(displays.empty()||MonitorFromWindow(game,MONITOR_DEFAULTTONEAREST)!=displays[displayIndex].monitor)throw std::runtime_error("Select the game's display as the output first.");
+            update();
+            const bool started=!source.status().running;
+            if(started)source.start(sourceConfig,displays[displayIndex].adapterLuid);
+            try{startOutput(false,false,&rect);outputGame=game;SetForegroundWindow(game);}
+            catch(...){if(started)source.stop();throw;}
+            notice="Game stereo is active. Mouse, keyboard and controller focus stay with the game. Use the tray icon to reopen controls.";
+        };
         auto toggleFullscreenControls=[&]{controlMenu.toggle();};
         auto runAction=[&](auto&& action){try{action();error.clear();}catch(const std::exception& e){error=e.what();}};
+        auto pollPreparedGame=[&]{
+            if(!gamePrepared||qpc()<nextGameScan)return;
+            nextGameScan=qpc()+.1;
+            if(preparedProcess&&WaitForSingleObject(preparedProcess,0)!=WAIT_TIMEOUT){
+                if(outputGame)stopOutput();source.stop();preparedSource=false;
+                CloseHandle(preparedProcess);preparedProcess=nullptr;preparedPid=0;
+                sourceConfig.window=nullptr;sourceConfig.directChannel=0;
+                prepareStatus="Game exited. Prepared for its next launch.";
+            }
+            if(!preparedProcess){
+                HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+                if(snapshot==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot watch for the selected game process.");
+                PROCESSENTRY32W entry{};entry.dwSize=sizeof(entry);
+                if(Process32FirstW(snapshot,&entry))do{
+                    if(_wcsicmp(entry.szExeFile,selectedGame.filename().c_str())!=0)continue;
+                    HANDLE process=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,entry.th32ProcessID);
+                    if(!process)continue;
+                    wchar_t path[32768]{};DWORD length=32768;
+                    if(QueryFullProcessImageNameW(process,0,path,&length)&&_wcsicmp(path,selectedGame.c_str())==0&&WaitForSingleObject(process,0)==WAIT_TIMEOUT){preparedProcess=process;preparedPid=entry.th32ProcessID;break;}
+                    CloseHandle(process);
+                }while(Process32NextW(snapshot,&entry));
+                CloseHandle(snapshot);
+                if(!preparedProcess)return;
+                sourceConfig.kind=SourceKind::DirectEyes;sourceConfig.directChannel=preparedPid;
+                prepareStatus="Game detected. Waiting for its stereo provider.";
+            }
+            if(!preparedSource){
+                if(!direct::available(preparedPid))return;
+                if(displays.empty())throw std::runtime_error("Choose an output display before preparing the game.");
+                source.start(sourceConfig,displays[displayIndex].adapterLuid);preparedSource=true;
+                prepareStatus="Stereo provider connected. Waiting for the first eye pair and game window.";
+            }
+            if(outputGame){prepareStatus="Game 3D active";return;}
+            windows=captureWindows(controlWindow);
+            std::erase_if(windows,[&](const auto& w){DWORD pid=0;GetWindowThreadProcessId(w.first,&pid);return pid!=preparedPid||w.first==outputWindow;});
+            windowIndex=0;sourceConfig.window=windows.empty()?nullptr:windows.front().first;
+            const auto status=source.status();
+            if(!status.running)throw std::runtime_error("Prepared game capture stopped: "+status.message);
+            if(!sourceConfig.window||IsIconic(sourceConfig.window)||!status.frames)return;
+            DWORD foreground=0;GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
+            if(foreground!=preparedPid){prepareStatus="Stereo connected. Bring the game to the foreground to start 3D.";return;}
+            startGameOutput();prepareStatus="Game 3D active";
+        };
         // Starting points change values, never the window or the calibration UI.
         auto applyStartingPreset=[&](int preset){
             settings.lcd=LcdTiming{};settings.lcd.enabled=preset==0;settings.sequence=preset==3?Sequence::BlackInsertion:Sequence::Alternating;
@@ -435,21 +510,44 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 break;
             }LocalFree(args);}
         if(smoke&&wcsstr(GetCommandLineW(),L"--source-smoke")){sourceKind=3;sourceConfig.kind=SourceKind::Screen;requestedTool=1;}
+        if(smoke&&wcsstr(GetCommandLineW(),L"--vlc-smoke")){sourceKind=4;sourceConfig.kind=SourceKind::Vlc;requestedTool=1;}
+        if(wcsstr(GetCommandLineW(),L"--games")){requestedTool=8;sourceKind=5;sourceConfig.kind=SourceKind::DirectEyes;}
         std::string renderCheck="Render checks have not run in this session.";
         std::string vblankReport="No vblank measurement in this session. It times the display's blanking interval against the presentation timestamps and stores the scan start offset.";std::future<VblankMeasurement> vblankJob;
         // Deterministic UI coverage without changing a real display or profile.
         if(smoke&&wcsstr(GetCommandLineW(),L"--timing-mismatch")){settings.refresh=120;if(!displays.empty())displays[displayIndex].refresh=144;}
         gameSync.configure(outputSettings(),displays.empty()?nullptr:displays[displayIndex].monitor);
-        if(!smoke){ShowWindow(controlWindow,SW_SHOWDEFAULT);UpdateWindow(controlWindow);}
+        if(!smoke){
+            // Discard launcher-provided SW_HIDE: the normal app must open visibly.
+            // Windows can apply STARTUPINFO to the first ShowWindow call.
+            ShowWindow(controlWindow,SW_SHOWNORMAL);ShowWindow(controlWindow,SW_RESTORE);
+            UpdateWindow(controlWindow);
+        }
         double smokeStart=qpc();bool smokeSnapshot=false,smokePreviewStarted=false,smokePreviewVerified=false;
         bool previewOnLaunch=!smoke&&wcsstr(GetCommandLineW(),L"--start-preview");
         bool screenOnLaunch=!smoke&&wcsstr(GetCommandLineW(),L"--start-screen");
         bool fullscreenOnLaunch=wcsstr(GetCommandLineW(),L"--start-fullscreen")||liveUiTest;
         double liveTestNext=0,liveTestStarted=qpc(),liveTestSteadyStart=0;unsigned liveTestPresets=0;uint64_t liveTestSteadyMisses=0;unsigned liveTestEdits=0;uint64_t liveTestStartCommands=0;HWND liveTestWindow=nullptr;
         bool fullscreenSmoke=smoke&&wcsstr(GetCommandLineW(),L"--fullscreen-smoke");
+        bool gameOverlaySmoke=smoke&&wcsstr(GetCommandLineW(),L"--game-overlay-smoke");
+        const bool prepareSmoke=smoke&&wcsstr(GetCommandLineW(),L"--prepare-smoke");
+        if(prepareSmoke){selectedGame=compatibility::processExecutable(GetCurrentProcessId());gamePrepared=true;prepareStatus="Prepared smoke test";}
         while(!closeRequested){
             MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}if(smoke && qpc()-smokeStart>3)break;
-            if(outputStop){outputStop=false;stopOutput();}
+            if(outputGame&&outputWindow){
+                if(!IsWindow(outputGame)){stopOutput();source.stop();notice="Game closed; capture stopped.";}
+                else{
+                    RECT rect{};GetClientRect(outputGame,&rect);MapWindowPoints(outputGame,nullptr,reinterpret_cast<POINT*>(&rect),2);
+                    DWORD foregroundPid=0,gamePid=0;GetWindowThreadProcessId(GetForegroundWindow(),&foregroundPid);GetWindowThreadProcessId(outputGame,&gamePid);
+                    RECT positioned{};GetWindowRect(outputWindow,&positioned);
+                    if(!EqualRect(&positioned,&rect)&&rect.right>rect.left&&rect.bottom>rect.top)SetWindowPos(outputWindow,nullptr,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_NOZORDER);
+                    const bool show=!IsIconic(outputGame)&&foregroundPid==gamePid;
+                    if(show&&!IsWindowVisible(outputWindow))SetWindowPos(outputWindow,HWND_TOPMOST,0,0,0,0,SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW);
+                    else if(!show&&IsWindowVisible(outputWindow))ShowWindow(outputWindow,SW_HIDE);
+                }
+            }
+            if(outputStop){outputStop=false;if(gamePrepared){cancelPreparation();source.stop();}stopOutput();}
+            try{pollPreparedGame();}catch(const std::exception& e){cancelPreparation();if(outputGame)stopOutput();source.stop();prepareStatus=std::string("Preparation stopped: ")+e.what();error=prepareStatus;}
             if(fullscreenRequested){fullscreenRequested=false;runAction([&]{if(fullscreenMode)startOutput(presenter.status().preview,true);else startFullscreenOutput();});}
             if(controlsToggleRequested){controlsToggleRequested=false;toggleFullscreenControls();}
             if(controlsShowRequested){controlsShowRequested=false;if(fullscreenMode)controlMenu.show();else{ShowWindow(controlWindow,SW_RESTORE);SetForegroundWindow(controlWindow);}}
@@ -572,7 +670,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             ImGui::TextUnformatted("Vision Restoration");ImGui::SameLine();
             ImGui::SameLine();if(ImGui::Button("Capture window")){if(sourceKind!=2){source.stop();sourceKind=2;sourceConfig.kind=SourceKind::Window;changed=true;}requestedTool=1;}
             ImGui::SameLine();if(ImGui::Button("AI desktop")){if(sourceKind!=3){source.stop();sourceKind=3;sourceConfig.kind=SourceKind::Screen;changed=true;}requestedTool=1;}
-            ImGui::SameLine();if(ImGui::Button("All inputs"))requestedTool=1;
+            ImGui::SameLine();if(ImGui::Button("Input/Games"))requestedTool=1;
             ImGui::SameLine();if(ImGui::Button("Profiles"))requestedTool=2;
             ImGui::SameLine();if(ImGui::Button("Shortcuts"))requestedTool=7;
             auto lcdWindow=lcdExposure(lastAppliedLcd,apertureWindowHz(rs.locked?rs.measuredHz:settings.refresh,lastAppliedSequence),settings.signalScanUs);
@@ -591,6 +689,158 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             ImGui::SameLine();ImGui::BeginDisabled(!rs.running||rs.preview);if(ImGui::Button("Re-lock sync"))resyncRequested=true;ImGui::EndDisabled();
             ImGui::TextDisabled(fullscreenMode?"Configure or disable fullscreen keys in Shortcuts.":settings.lcd.enabled?"Arrows: settle / duration   Shift: fine   S: sweep   Enter: keep   X: swap   Esc: stop":"Arrows: phase / duration   Shift: fine   X: swap   Esc: stop");
             ImGui::Separator();
+            auto drawGamesAndInput=[&]{
+                    label("INPUT / GAMES");
+                    static int captureLayout=-1;static bool captureRightFirst=false;
+                    auto selectGame=[&](const std::filesystem::path& exe){
+                        auto inspected=compatibility::inspect(exe);cancelPreparation();if(outputGame)stopOutput();source.stop();selectedGame=exe;gameInfo=std::move(inspected);
+                        sourceKind=5;sourceConfig.kind=SourceKind::DirectEyes;sourceConfig.window=nullptr;sourceConfig.directChannel=0;windows.clear();windowIndex=0;captureLayout=-1;changed=true;
+                    };
+                    if(ImGui::Button("Choose game...",{-1,32*dpi}))runAction([&]{auto exe=chooseFile(controlWindow,L"Game executable\0*.exe\0\0");if(!exe.empty())selectGame(exe);});
+                    if(!selectedGame.empty())ImGui::TextWrapped("%s",utf8(selectedGame.wstring()).c_str());
+                    if(ImGui::Combo("Source",&sourceKind,"Built-in patterns\0Stereo image\0Capture window\0Whole screen (AI depth)\0VLC stereo movie\0Game stereo\0")){cancelPreparation();if(outputGame)stopOutput();source.stop();sourceConfig.kind=SourceKind(sourceKind);changed=true;}
+                    if(sourceKind==1||sourceKind==2||sourceKind==4){int packing=int(sourceConfig.packing);if(ImGui::Combo("Packing",&packing,"Side by side\0Top / bottom\0")){source.stop();sourceConfig.packing=Packing(packing);}}
+                    if(sourceKind==5){
+                        if(selectedGame.empty())paragraph("Choose the game executable to inspect its fix and connect its stereo output.");
+                        else{
+                            ImGui::Separator();label("GAME CONNECTION");paragraph(gameInfo.description.c_str());
+                            const auto record=selectedGame.parent_path()/L"VisionRestoration.CaptureBackup/connection.txt";
+                            const bool connected=std::filesystem::is_regular_file(record);
+                            if(gameInfo.geo11)paragraph("Geo11 output is detected from its existing settings. The app presents the received eyes in frame sequence.");
+                            else{
+                                ImGui::SetNextItemWidth(-1);ImGui::Combo("##game_layout",&captureLayout,"Frame sequential (alternating eyes)\0Stereo texture array\0Katanga shared eyes\0Side by side (fallback)\0Top / bottom (fallback)\0");
+                                if(captureLayout<0)paragraph("Select the output the game actually produces. A detected fix does not establish its output layout.");
+                                if(gameInfo.migoto)paragraph("3Dmigoto's NVIDIA driver stereo is not an alternating game backbuffer. A capture connection alone does not supply that rendering backend.");
+                                ImGui::Checkbox("Reverse received eyes",&captureRightFirst);
+                            }
+                            ImGui::TextUnformatted(connected?"Capture adapter connected":"Capture adapter not connected");
+                            ImGui::BeginDisabled(connected||gameInfo.migoto||(!gameInfo.geo11&&captureLayout<0));
+                            if(ImGui::Button("Connect game"))runAction([&]{notice=compatibility::connectCapture(selectedGame,executableDirectory()/L"runtime",gameInfo.geo11?compatibility::CaptureMode::Katanga:compatibility::CaptureMode(captureLayout),captureRightFirst);gameInfo=compatibility::inspect(selectedGame);});
+                            ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(!connected);
+                            if(ImGui::Button("Disconnect adapter"))runAction([&]{cancelPreparation();if(outputGame)stopOutput();source.stop();notice=compatibility::disconnectCapture(selectedGame);gameInfo=compatibility::inspect(selectedGame);});ImGui::EndDisabled();
+                            ImGui::BeginDisabled(gamePrepared||gameInfo.migoto||(!gameInfo.geo11&&captureLayout<0)||!emitterOnline||displays.empty()||!rateMatches||!timingAllowed);
+                            if(ImGui::Button("Prepare game",{-1,32*dpi}))runAction([&]{
+                                if(settings.refresh<100&&!emitter.status().extendedCadence)throw std::runtime_error("Stereo output requires at least 100 Hz with this emitter firmware.");
+                                if(!connected){compatibility::connectCapture(selectedGame,executableDirectory()/L"runtime",gameInfo.geo11?compatibility::CaptureMode::Katanga:compatibility::CaptureMode(captureLayout),captureRightFirst);gameInfo=compatibility::inspect(selectedGame);}
+                                stopOutput();source.stop();cancelPreparation();
+                                sourceConfig.window=nullptr;sourceConfig.directChannel=0;
+                                gamePrepared=true;nextGameScan=0;prepareStatus="Prepared. Launch the selected game normally.";notice=prepareStatus;
+                            });
+                            ImGui::EndDisabled();
+                            if(gamePrepared&&ImGui::Button("Cancel preparation / stop game 3D")){cancelPreparation();if(outputGame)stopOutput();source.stop();}
+                            paragraph(prepareStatus.c_str());
+                            paragraph("Prepare before launching. The app connects automatically when the selected game supplies stereo eyes. Keep the game windowed or borderless on the selected output display.");
+                            if(!emitterOnline||!rateMatches||!timingAllowed)paragraph("Preparation needs a connected emitter and valid timing for the selected display.");
+                            if(gameInfo.geo11&&ImGui::CollapsingHeader("Game depth")){
+                    static std::filesystem::path tuningGame;static compatibility::Tuning gameTuning;static uint32_t tuningPid=0;
+                    auto selectTuning=[&](const std::filesystem::path& exe){auto values=compatibility::tuning(exe);tuningGame=exe;gameTuning=values;};
+                    const auto activeGame=gameSync.status();
+                    if(activeGame.hooked&&activeGame.pid!=tuningPid){tuningPid=activeGame.pid;runAction([&]{auto exe=compatibility::processExecutable(activeGame.pid);if(!exe.empty())selectTuning(exe);});}
+                    if(tuningGame!=selectedGame)runAction([&]{selectTuning(selectedGame);});
+                    if(!tuningGame.empty()){
+                        ImGui::Text("Game depth: %s",utf8(tuningGame.filename().wstring()).c_str());
+                        ImGui::SliderFloat("Depth (%)",&gameTuning.depth,0,100,"%.1f%%",ImGuiSliderFlags_AlwaysClamp);
+                        bool applyDepth=ImGui::IsItemDeactivatedAfterEdit();
+                        ImGui::BeginDisabled(gameTuning.autoConvergence);
+                        ImGui::SliderFloat("Game convergence",&gameTuning.convergence,.01f,1000,"%.3f",ImGuiSliderFlags_Logarithmic|ImGuiSliderFlags_AlwaysClamp);
+                        applyDepth|=ImGui::IsItemDeactivatedAfterEdit();ImGui::EndDisabled();
+                        if(gameTuning.autoConvergence)paragraph("This fix controls convergence automatically. Its behavior is preserved; depth remains adjustable.");
+                        if(ImGui::Button("Apply game depth"))applyDepth=true;
+                        ImGui::SameLine();if(ImGui::Button("Read saved game depth"))runAction([&]{selectTuning(tuningGame);});
+                        if(applyDepth)runAction([&]{notice=compatibility::setTuning(tuningGame,gameTuning);});
+                        paragraph("Release a slider to save, then return to the game to apply. An unconnected game uses the settings next launch. Reloading may briefly pause the game.");
+                    }
+                            }
+                        }
+                    }
+                    if(sourceKind==1&&ImGui::Button("Choose image..."))runAction([&]{auto file=chooseFile(controlWindow,L"Stereo images\0*.png;*.jpg;*.jpeg;*.bmp;*.jps\0\0");if(!file.empty())sourceConfig.file=file;});
+                    if(sourceKind==4){
+                        paragraph("Play a side-by-side or top/bottom 3D movie directly through VLC with sound. Select the movie's packing, start the source, then use 3D preview or fullscreen with your calibrated timing. Half-width / half-height movies expand to the output area. Use Swap eyes for reversed layouts.");
+                        if(ImGui::Button("Choose movie..."))runAction([&]{auto file=chooseFile(controlWindow,L"Movies\0*.mkv;*.mp4;*.avi;*.mov;*.m4v;*.ts;*.m2ts;*.webm;*.wmv;*.mpg;*.mpeg\0All files\0*.*\0\0");if(!file.empty()){source.stop();sourceConfig.file=file;}});
+                        if(!sourceConfig.file.empty())ImGui::TextWrapped("Movie: %s",utf8(sourceConfig.file.filename().wstring()).c_str());
+                        if(ImGui::Button("Choose VLC..."))runAction([&]{auto file=chooseFile(controlWindow,L"VLC media player (64-bit VLC 3.x)\0vlc.exe\0\0");if(!file.empty()){source.stop();sourceConfig.vlcDirectory=file.parent_path();}});
+                        ImGui::TextWrapped("VLC: %s",sourceConfig.vlcDirectory.empty()?"automatic (installed VLC or vlc folder beside the app)":utf8(sourceConfig.vlcDirectory.wstring()).c_str());
+                        ImGui::BeginDisabled(!ss.running);
+                        if(ImGui::Button(ss.mediaPaused?"Resume movie":"Pause movie"))source.pauseMedia(!ss.mediaPaused);
+                        ImGui::SameLine();if(ImGui::Button("Stop movie"))source.stop();
+                        static int movieVolume=100;if(ImGui::SliderInt("Movie volume",&movieVolume,0,100,"%d%%"))source.volumeMedia(movieVolume);
+                        ImGui::BeginDisabled(!ss.mediaSeekable||ss.mediaLengthMs<=0);
+                        float position=float(double(ss.mediaTimeMs)/1000);
+                        if(ImGui::SliderFloat("Movie position",&position,0,float(double(ss.mediaLengthMs)/1000),"%.1f s"))source.seekMedia(int64_t(double(position)*1000));
+                        ImGui::EndDisabled();ImGui::EndDisabled();
+                        ImGui::Text("Time: %lld:%02lld / %lld:%02lld",ss.mediaTimeMs/60000,(ss.mediaTimeMs/1000)%60,ss.mediaLengthMs/60000,(ss.mediaLengthMs/1000)%60);
+                        paragraph("Requires a complete 64-bit VLC 3.x installation. Direct playback currently uses SDR pixels; HDR movie fidelity and optical timing need validation. Ordinary 2D movies can use AI desktop while playing in VLC.");
+                    }
+                    if(sourceKind==2||sourceKind==5){
+                        ImGui::Separator();label(sourceKind==5?"RUNNING GAME":"SOURCE WINDOW");
+                        static double lastWindowRefresh=-10;
+                        auto refreshWindows=[&]{
+                            const HWND previous=sourceConfig.window;windows=captureWindows(controlWindow);
+                            std::erase_if(windows,[&](const auto& w){
+                                if(w.first==outputWindow)return true;
+                                if(sourceKind!=5||selectedGame.empty())return false;
+                                DWORD pid=0;GetWindowThreadProcessId(w.first,&pid);const auto exe=compatibility::processExecutable(pid);
+                                return exe.empty()||_wcsicmp(exe.c_str(),selectedGame.c_str())!=0;
+                            });
+                            windowIndex=0;for(size_t i=0;i<windows.size();++i)if(windows[i].first==previous)windowIndex=int(i);
+                            sourceConfig.window=windows.empty()?nullptr:windows[windowIndex].first;sourceConfig.directChannel=0;
+                            if(sourceKind==5&&sourceConfig.window){DWORD pid=0;GetWindowThreadProcessId(sourceConfig.window,&pid);sourceConfig.directChannel=pid;}
+                            lastWindowRefresh=qpc();
+                        };
+                        if(!gamePrepared&&qpc()-lastWindowRefresh>1)runAction(refreshWindows);
+                        ImGui::BeginDisabled(gamePrepared);
+                        if(ImGui::Button("Refresh running windows"))runAction(refreshWindows);
+                        if(ImGui::BeginCombo("Window",windows.empty()?"Waiting for game window":windows[windowIndex].second.c_str())){for(size_t i=0;i<windows.size();++i)if(ImGui::Selectable(windows[i].second.c_str(),int(i)==windowIndex)){windowIndex=int(i);sourceConfig.window=windows[i].first;DWORD pid=0;GetWindowThreadProcessId(sourceConfig.window,&pid);sourceConfig.directChannel=pid;}ImGui::EndCombo();}
+                        ImGui::EndDisabled();
+                        if(sourceKind==5){
+                            if(gamePrepared)paragraph(prepareStatus.c_str());
+                            else if(!sourceConfig.window)paragraph("Game window not found. Launch the selected game normally.");
+                            else if(!direct::available(sourceConfig.directChannel))paragraph("Game window found, but its stereo provider is not ready. Capture has not started.");
+                            else paragraph("Stereo provider is ready. Start game capture below.");
+                        }else ImGui::TextDisabled("Capture color: automatic HDR / SDR");
+                    }
+                    if(sourceKind==3){
+                        label("WHOLE SCREEN IN 3D (AI DEPTH)");
+                        paragraph("Captures a display, estimates every pixel's depth with a neural network (Depth Anything V2 Small through ONNX Runtime and DirectML, in its own low-priority process) and shows the result over the output display. Mouse and keyboard go through to the desktop, and Windows draws the cursor above it at screen depth. Not yet verified through the glasses.");
+                        if(!displays.empty()){screenDisplayIndex=std::clamp(screenDisplayIndex,0,int(displays.size())-1);ImGui::SetNextItemWidth(280*dpi);
+                            if(ImGui::BeginCombo("Convert display",displays[screenDisplayIndex].name.c_str())){for(size_t i=0;i<displays.size();++i)if(ImGui::Selectable(displays[i].name.c_str(),int(i)==screenDisplayIndex))screenDisplayIndex=int(i);ImGui::EndCombo();}
+                            sourceConfig.monitor=displays[screenDisplayIndex].monitor;}
+                        {float strength=settings.screen.separation*100;ImGui::SetNextItemWidth(-1);if(ImGui::SliderFloat("##screensep",&strength,0,10,"Depth strength %.2f %% of the width (Ctrl+Alt+PageUp/PageDown)")){settings.screen.separation=strength/100;changed=true;}}
+                        ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##screenconv",&settings.screen.convergence,.01f,1,"Screen plane %.2f: 1 keeps everything behind the screen (Ctrl+Alt+Home/End)");
+                        ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##screenpop",&settings.screen.popOut,0,2,"Pop-out limit %.2f x depth strength");
+                        ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##screensmooth",&settings.screen.smoothing,0,.95f,"Depth smoothing %.2f");
+                        {int quality=settings.screen.quality<=518?0:settings.screen.quality<=700?1:2;ImGui::SetNextItemWidth(280*dpi);if(ImGui::Combo("Network input",&quality,"Fast (518 px)\0Balanced (700 px)\0Fine (924 px)\0")){settings.screen.quality=quality==0?518u:quality==1?700u:924u;changed=true;}
+                         int steps=int(settings.screen.steps);ImGui::SetNextItemWidth(280*dpi);if(ImGui::SliderInt("Search steps per pixel",&steps,4,64)){settings.screen.steps=unsigned(steps);changed=true;}
+                         float rate=float(settings.screen.depthRate);ImGui::SetNextItemWidth(280*dpi);if(ImGui::SliderFloat("Depth updates per second",&rate,5,60,"%.0f")){settings.screen.depthRate=rate;changed=true;}
+                         ImGui::SameLine();ImGui::TextDisabled("(never more than half the GPU: %.0f ms per map now)",ss.depthMs);}
+                        changed|=ImGui::Checkbox("3D depth (Ctrl+Alt+Insert)",&settings.screen.depth);ImGui::SameLine();changed|=ImGui::Checkbox("Show depth map",&settings.screen.showDepth);
+                        {static std::vector<std::filesystem::path> models;static double modelsScanned=-10;if(qpc()-modelsScanned>5){modelsScanned=qpc();models=listDepthModels();if(sourceConfig.depthModel.empty())sourceConfig.depthModel=findDepthModel();}
+                         std::error_code ec;const bool helperFound=std::filesystem::exists(sourceConfig.depthHelper,ec);
+                         const std::string current=settings.screen.model.empty()?(sourceConfig.depthModel.empty()?std::string("none found"):utf8(sourceConfig.depthModel.filename().wstring())+" (default)"):utf8(std::filesystem::path(wide(settings.screen.model)).filename().wstring());
+                         ImGui::SetNextItemWidth(360*dpi);
+                         if(ImGui::BeginCombo("Model",current.c_str())){
+                             if(ImGui::Selectable("Default: Depth Anything V2 Small",settings.screen.model.empty())){settings.screen.model.clear();changed=true;}
+                             for(auto& m:models){const std::string path=utf8(m.wstring());if(ImGui::Selectable(utf8(m.filename().wstring()).c_str(),settings.screen.model==path)){settings.screen.model=path;changed=true;}}
+                             ImGui::EndCombo();}
+                         ImGui::SameLine();if(ImGui::Button("Choose model..."))runAction([&]{auto file=chooseFile(controlWindow,L"ONNX depth model\0*.onnx\0\0");if(!file.empty()){settings.screen.model=utf8(file.wstring());changed=true;}});
+                         paragraph("Download Small, Base or Large using the links in the Quick Start PDF. Small is fastest for games and the desktop; Base and Large can add detail for films but use more GPU time and are non-commercial. A model change restarts AI depth while the picture stays up.");
+                         if(!helperFound)ImGui::TextColored({1,.45f,.3f,1},"VisionDepth.exe is missing. Restore the complete portable release.");}
+                        ImGui::BeginDisabled(!emitterOnline||displays.empty()||!rateMatches||!timingAllowed);
+                        if(ImGui::Button("Start screen 3D",{200*dpi,32*dpi}))runAction([&]{source.stop();sourceConfig.kind=SourceKind::Screen;sourceConfig.monitor=displays[screenDisplayIndex].monitor;update();source.start(sourceConfig,displays[displayIndex].adapterLuid);startOutput(false,false,nullptr,true);update();});
+                        ImGui::EndDisabled();
+                        paragraph("Start screen 3D captures the chosen display and lays the click-through stereo output over the output display. Start source alone feeds the conversion to the 3D preview instead. Strength, screen plane, smoothing, steps and the depth map view apply live; the network input restarts the helper.");
+                        if(!ss.depthMessage.empty())ImGui::TextWrapped("Depth network: %s",ss.depthMessage.c_str());
+                    }
+                    if(sourceKind==5){
+                        ImGui::BeginDisabled(gamePrepared||!emitterOnline||displays.empty()||!rateMatches||!timingAllowed||!sourceConfig.window||!direct::available(sourceConfig.directChannel));
+                        if(ImGui::Button("Start game 3D",{-1,32*dpi}))runAction(startGameOutput);
+                        ImGui::EndDisabled();
+                        paragraph("Start game 3D presents over the game and keeps its controls focused. Use windowed or borderless mode on the selected output display.");
+                    }
+                    ImGui::BeginDisabled(gamePrepared||displays.empty()||sourceKind==0||((sourceKind==2||sourceKind==5)&&!sourceConfig.window)||(sourceKind==5&&!direct::available(sourceConfig.directChannel)));if(ImGui::Button(sourceKind==5?"Start game capture":"Start source"))runAction([&]{update();source.start(sourceConfig,displays[displayIndex].adapterLuid);changed=true;});ImGui::EndDisabled();ImGui::SameLine();if(ImGui::Button("Stop capture / source")){cancelPreparation();if(outputGame)stopOutput();source.stop();}
+                    if(ImGui::Button("Use built-in patterns")){cancelPreparation();if(outputGame)stopOutput();source.stop();sourceKind=0;sourceConfig.kind=SourceKind::Patterns;changed=true;}if(ss.running||ss.frames||sourceKind!=5)paragraph(ss.message.c_str());
+                    if(sourceKind==5)ImGui::Text("Received stereo pairs: %llu",ss.frames);
+            };
             float workspaceHeight=std::max(120*dpi,ImGui::GetContentRegionAvail().y-44*dpi);
             ImGui::BeginTable("live_workspace",2,ImGuiTableFlags_SizingStretchProp);
             ImGui::TableSetupColumn("controls",ImGuiTableColumnFlags_WidthStretch,.48f);ImGui::TableSetupColumn("preview",ImGuiTableColumnFlags_WidthStretch,.52f);
@@ -604,12 +854,21 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(!displays.empty())ImGui::TextDisabled("%u x %u  |  %.3f Hz  |  %s",displays[displayIndex].width,displays[displayIndex].height,displays[displayIndex].refresh,settings.hdr?"HDR":"SDR");
             ImGui::TextWrapped("Profile: %s",settings.name.c_str());
             if(!rateMatches&&ImGui::Button("Match display refresh"))runAction([&]{stopOutput();settings.refresh=displays[displayIndex].refresh;update();});
+            if(ImGui::BeginTabBar("left_workspace_tabs")){
+                if(ImGui::BeginTabItem("Tuning")){
             primaryTiming();ImGui::Separator();
             changed|=drawImageControls(settings,!displays.empty()&&displays[displayIndex].hdrEnabled,sourceKind==3);
             if(ImGui::Button("Brightness pattern"))selectPattern(3);
             ImGui::Separator();
             startingPresets();
             advancedTiming();
+                    ImGui::EndTabItem();
+                }
+                if(ImGui::BeginTabItem("Input/Games",nullptr,(requestedTool==1||requestedTool==8)?ImGuiTabItemFlags_SetSelected:0)){
+                    drawGamesAndInput();ImGui::EndTabItem();
+                }
+                ImGui::EndTabBar();
+            }
             ImGui::EndChild();ImGui::TableSetColumnIndex(1);
             label(fullscreenMode?"ACTIVE OUTPUT":"LIVE 3D PREVIEW");
             float previewWidth=std::max(1.f,ImGui::GetContentRegionAvail().x);
@@ -705,57 +964,6 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             ImGui::TextWrapped("Selected: %s",sourceKind==0?patternNames[step]:"External stereo source");
             if(sourceKind==0&&step!=2)paragraph("Eye-isolation targets stay fixed. Select Stereo scene to adjust alignment.");
             }
-                    ImGui::EndTabItem();
-                }
-                if(ImGui::BeginTabItem("Input",nullptr,requestedTool==1?ImGuiTabItemFlags_SetSelected:0)){
-                    label("STEREO SOURCE");
-                    if(ImGui::Combo("Input",&sourceKind,"Built-in patterns\0Stereo image\0Capture window\0Whole screen (AI depth)\0")){source.stop();sourceConfig.kind=SourceKind(sourceKind);changed=true;}
-                    if(sourceKind!=3){int packing=int(sourceConfig.packing);if(ImGui::Combo("Packing",&packing,"Side by side\0Top / bottom\0"))sourceConfig.packing=Packing(packing);}
-                    if(sourceKind==1&&ImGui::Button("Choose image..."))runAction([&]{auto file=chooseFile(controlWindow,L"Stereo images\0*.png;*.jpg;*.jpeg;*.bmp;*.jps\0\0");if(!file.empty())sourceConfig.file=file;});
-                    if(sourceKind==2){
-                        if(ImGui::Button("Refresh windows"))runAction([&]{windows=captureWindows(controlWindow);std::erase_if(windows,[&](auto& w){return w.first==outputWindow;});windowIndex=0;});
-                        if(ImGui::BeginCombo("Source window",windows.empty()?"None":windows[windowIndex].second.c_str())){for(size_t i=0;i<windows.size();++i)if(ImGui::Selectable(windows[i].second.c_str(),int(i)==windowIndex))windowIndex=int(i);ImGui::EndCombo();}
-                        if(!windows.empty())sourceConfig.window=windows[windowIndex].first;
-                        ImGui::TextDisabled("Capture color: automatic HDR / SDR");
-                    }
-                    if(sourceKind==3){
-                        label("WHOLE SCREEN IN 3D (AI DEPTH)");
-                        paragraph("Captures a display, estimates every pixel's depth with a neural network (Depth Anything V2 Small through ONNX Runtime and DirectML, in its own low-priority process) and shows the result over the output display. Mouse and keyboard go through to the desktop, and Windows draws the cursor above it at screen depth. Not yet verified through the glasses.");
-                        if(!displays.empty()){screenDisplayIndex=std::clamp(screenDisplayIndex,0,int(displays.size())-1);ImGui::SetNextItemWidth(280*dpi);
-                            if(ImGui::BeginCombo("Convert display",displays[screenDisplayIndex].name.c_str())){for(size_t i=0;i<displays.size();++i)if(ImGui::Selectable(displays[i].name.c_str(),int(i)==screenDisplayIndex))screenDisplayIndex=int(i);ImGui::EndCombo();}
-                            sourceConfig.monitor=displays[screenDisplayIndex].monitor;}
-                        {float strength=settings.screen.separation*100;ImGui::SetNextItemWidth(-1);if(ImGui::SliderFloat("##screensep",&strength,0,10,"Depth strength %.2f %% of the width (Ctrl+Alt+PageUp/PageDown)")){settings.screen.separation=strength/100;changed=true;}}
-                        ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##screenconv",&settings.screen.convergence,.01f,1,"Screen plane %.2f: 1 keeps everything behind the screen (Ctrl+Alt+Home/End)");
-                        ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##screenpop",&settings.screen.popOut,0,2,"Pop-out limit %.2f x depth strength");
-                        ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##screensmooth",&settings.screen.smoothing,0,.95f,"Depth smoothing %.2f");
-                        {int quality=settings.screen.quality<=518?0:settings.screen.quality<=700?1:2;ImGui::SetNextItemWidth(280*dpi);if(ImGui::Combo("Network input",&quality,"Fast (518 px)\0Balanced (700 px)\0Fine (924 px)\0")){settings.screen.quality=quality==0?518u:quality==1?700u:924u;changed=true;}
-                         int steps=int(settings.screen.steps);ImGui::SetNextItemWidth(280*dpi);if(ImGui::SliderInt("Search steps per pixel",&steps,4,64)){settings.screen.steps=unsigned(steps);changed=true;}
-                         float rate=float(settings.screen.depthRate);ImGui::SetNextItemWidth(280*dpi);if(ImGui::SliderFloat("Depth updates per second",&rate,5,60,"%.0f")){settings.screen.depthRate=rate;changed=true;}
-                         ImGui::SameLine();ImGui::TextDisabled("(never more than half the GPU: %.0f ms per map now)",ss.depthMs);}
-                        changed|=ImGui::Checkbox("3D depth (Ctrl+Alt+Insert)",&settings.screen.depth);ImGui::SameLine();changed|=ImGui::Checkbox("Show depth map",&settings.screen.showDepth);
-                        {static std::vector<std::filesystem::path> models;static double modelsScanned=-10;if(qpc()-modelsScanned>5){modelsScanned=qpc();models=listDepthModels();if(sourceConfig.depthModel.empty())sourceConfig.depthModel=findDepthModel();}
-                         std::error_code ec;const bool helperFound=std::filesystem::exists(sourceConfig.depthHelper,ec);
-                         const std::string current=settings.screen.model.empty()?(sourceConfig.depthModel.empty()?std::string("none found"):utf8(sourceConfig.depthModel.filename().wstring())+" (default)"):utf8(std::filesystem::path(wide(settings.screen.model)).filename().wstring());
-                         ImGui::SetNextItemWidth(360*dpi);
-                         if(ImGui::BeginCombo("Model",current.c_str())){
-                             if(ImGui::Selectable("Default: Depth Anything V2 Small",settings.screen.model.empty())){settings.screen.model.clear();changed=true;}
-                             for(auto& m:models){const std::string path=utf8(m.wstring());if(ImGui::Selectable(utf8(m.filename().wstring()).c_str(),settings.screen.model==path)){settings.screen.model=path;changed=true;}}
-                             ImGui::EndCombo();}
-                         ImGui::SameLine();if(ImGui::Button("Choose model..."))runAction([&]{auto file=chooseFile(controlWindow,L"ONNX depth model\0*.onnx\0\0");if(!file.empty()){settings.screen.model=utf8(file.wstring());changed=true;}});
-                         paragraph("Small is the fast one for games and the desktop. tools\\Get-DepthModel.ps1 -Size base or -Size large fetches the stronger Depth Anything V2 models for films: finer depth, slower, more of the GPU. A model change restarts the depth helper; the picture stays up meanwhile.");
-                         if(!helperFound)ImGui::TextColored({1,.45f,.3f,1},"VisionDepth.exe is missing: run tools/Get-Dependencies.ps1, then build.ps1.");}
-                        ImGui::BeginDisabled(!emitterOnline||displays.empty()||!rateMatches||!timingAllowed);
-                        if(ImGui::Button("Start screen 3D",{200*dpi,32*dpi}))runAction([&]{source.stop();sourceConfig.kind=SourceKind::Screen;sourceConfig.monitor=displays[screenDisplayIndex].monitor;update();source.start(sourceConfig,displays[displayIndex].adapterLuid);startOutput(false,false,nullptr,true);update();});
-                        ImGui::EndDisabled();
-                        paragraph("Start screen 3D captures the chosen display and lays the click-through stereo output over the output display. Start source alone feeds the conversion to the 3D preview instead. Strength, screen plane, smoothing, steps and the depth map view apply live; the network input restarts the helper.");
-                        if(!ss.depthMessage.empty())ImGui::TextWrapped("Depth network: %s",ss.depthMessage.c_str());
-                    }
-                    ImGui::BeginDisabled(displays.empty()||sourceKind==0);if(ImGui::Button("Start source"))runAction([&]{update();source.start(sourceConfig,displays[displayIndex].adapterLuid);changed=true;});ImGui::EndDisabled();ImGui::SameLine();
-                    if(ImGui::Button("Use built-in patterns")){source.stop();sourceKind=0;sourceConfig.kind=SourceKind::Patterns;changed=true;}paragraph(ss.message.c_str());
-                    ImGui::Spacing();ImGui::Separator();label("EXISTING GAME FIX");
-                    paragraph("Inspect the installed community fix without changing its files. Original-window Geo11 output through this app is not currently available.");
-                    if(ImGui::Button("Inspect installed fix..."))runAction([&]{auto exe=chooseFile(controlWindow,L"Game executable\0*.exe\0\0");if(!exe.empty())notice=compatibility::inspect(exe).description;});
-                    ImGui::SameLine();if(ImGui::Button("Remove old prototype adapter..."))runAction([&]{auto exe=chooseFile(controlWindow,L"Game executable\0*.exe\0\0");if(!exe.empty())notice=compatibility::disconnect(exe);});
                     ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Profiles",nullptr,requestedTool==2?ImGuiTabItemFlags_SetSelected:0)){
@@ -1042,7 +1250,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             }
             // Exercise the actual child-window presenter without USB writes or profile edits.
             // The production button passes sideBySide=false to enable frame-sequential 3D.
-            if(smoke&&!smokePreviewStarted&&qpc()-smokeStart>1){if(fullscreenSmoke)startFullscreenOutput();else startOutput(true,true);smokePreviewStarted=true;settings.convergence=.01f;settings.phaseUs+=100;update();}
+            if(smoke&&!smokePreviewStarted&&qpc()-smokeStart>1){if(gameOverlaySmoke){RECT rect{};GetClientRect(controlWindow,&rect);MapWindowPoints(controlWindow,nullptr,reinterpret_cast<POINT*>(&rect),2);startOutput(true,false,&rect,false,true);outputGame=controlWindow;}else if(fullscreenSmoke)startFullscreenOutput();else startOutput(true,true);smokePreviewStarted=true;settings.convergence=.01f;settings.phaseUs+=100;update();}
             if(smoke&&settings.lcd.enabled&&smokePreviewStarted&&!smokePreviewVerified&&qpc()-smokeStart>1.8){
                 HWND original=outputWindow;
                 for(int i=0;i<10;++i){
@@ -1055,7 +1263,13 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 RECT actual{};GetWindowRect(outputWindow,&actual);MapWindowPoints(nullptr,controlWindow,reinterpret_cast<POINT*>(&actual),2);
                 auto test=presenter.status();
                 // A hidden parent is occluded, so Present need not advance in this smoke test.
-                if((!fullscreenSmoke&&(GetParent(outputWindow)!=controlWindow||!EqualRect(&actual,&previewRect)))||(fullscreenSmoke&&!fullscreenMode)||!test.running||emitter.status().commands!=0)throw std::runtime_error("Embedded live preview regression: window placement, presenter startup or USB isolation failed: "+test.message);
+                if((!fullscreenSmoke&&!gameOverlaySmoke&&(GetParent(outputWindow)!=controlWindow||!EqualRect(&actual,&previewRect)))||(fullscreenSmoke&&!fullscreenMode)||!test.running||emitter.status().commands!=0)throw std::runtime_error("Embedded live preview regression: window placement, presenter startup or USB isolation failed: "+test.message);
+                if(gameOverlaySmoke){
+                    const auto overlayStyle=GetWindowLongPtrW(outputWindow,GWL_EXSTYLE);
+                    if(!outputPassThrough||outputGame!=controlWindow||GetParent(outputWindow)||(overlayStyle&(WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED))!=(WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED))throw std::runtime_error("Game output must remain a separate nonactivating click-through window.");
+                    RECT expected{},actualGame{};GetClientRect(controlWindow,&expected);MapWindowPoints(controlWindow,nullptr,reinterpret_cast<POINT*>(&expected),2);GetWindowRect(outputWindow,&actualGame);
+                    if(!EqualRect(&expected,&actualGame))throw std::runtime_error("Game output does not cover its client area.");
+                }
                 if(sourceKind==3){
                     for(HWND window:{controlWindow,outputEmbedded?controlWindow:outputWindow}){
                         DWORD affinity=0;if(!GetWindowDisplayAffinity(window,&affinity)||affinity!=WDA_EXCLUDEFROMCAPTURE)
@@ -1075,10 +1289,21 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             }
             ImGui::End();ImGui::Render();ui.bind();float clear[]{.035f,.047f,.07f,1};ui.context->ClearRenderTargetView(ui.target.Get(),clear);ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
             if(fullscreenSmoke&&smokePreviewVerified)saveSurfacePng(ui,workspace()/L"reports/ui-fullscreen-controls.png");
-            if(smoke && !smokeSnapshot && qpc()-smokeStart>.75){saveSurfacePng(ui,workspace()/L"reports/ui-preview.png");smokeSnapshot=true;}HRESULT shown=ui.swap->Present(1,0);if(shown==DXGI_STATUS_OCCLUDED)Sleep(20);else check(shown,"Control window present");
+            if(smoke && !smokeSnapshot && qpc()-smokeStart>.75){
+                if(prepareSmoke){
+                    if(!gamePrepared||preparedPid!=GetCurrentProcessId()||preparedSource)throw std::runtime_error("Prepared watcher failed to find the exact EXE outside the Games panel, or attached without a provider.");
+                    const auto own=selectedGame;cancelPreparation();
+                    if(preparedProcess||preparedPid||gamePrepared)throw std::runtime_error("Preparation cancellation retained a process.");
+                    selectedGame=own.parent_path()/L"not-the-selected-folder"/own.filename();gamePrepared=true;nextGameScan=0;pollPreparedGame();
+                    if(preparedProcess||preparedPid)throw std::runtime_error("Preparation matched a filename instead of the full selected EXE path.");
+                    cancelPreparation();
+                    std::ofstream report(workspace()/L"reports/game-prepare-smoke.txt");report<<"PASS: watcher runs outside Input/Games, matches full executable path, waits for provider, and releases its process on cancellation. No game launch, adapter installation, emitter writes, or automatic optical output tested.\n";
+                }
+                saveSurfacePng(ui,workspace()/L"reports/ui-preview.png");smokeSnapshot=true;
+            }HRESULT shown=ui.swap->Present(1,0);if(shown==DXGI_STATUS_OCCLUDED)Sleep(20);else check(shown,"Control window present");
         }
-        stopOutput();gameSync.stop();source.stop();emitter.disconnect();modeGuard.restore();keyBindings.activate(false);shortcuts=nullptr;if(!smoke)Shell_NotifyIconW(NIM_DELETE,&tray);ImGui_ImplDX11_Shutdown();ImGui_ImplWin32_Shutdown();ImGui::DestroyContext();DestroyWindow(controlWindow);
-        if(smoke){std::filesystem::create_directories(workspace()/L"reports");std::ofstream f(workspace()/L"reports/ui-smoke.txt");if(!smokePreviewVerified)throw std::runtime_error("Preview check did not complete.");f<<"PASS: native UI, "<<(fullscreenSmoke?"fullscreen controls":"embedded child-window placement")<<" and presenter startup after live alignment/timing edits; clean shutdown. Hidden controls: optical behavior not measured. No emitter writes, profile edits or display mode changes.\n";}
+        cancelPreparation();stopOutput();gameSync.stop();source.stop();emitter.disconnect();modeGuard.restore();keyBindings.activate(false);shortcuts=nullptr;if(!smoke)Shell_NotifyIconW(NIM_DELETE,&tray);ImGui_ImplDX11_Shutdown();ImGui_ImplWin32_Shutdown();ImGui::DestroyContext();DestroyWindow(controlWindow);
+        if(smoke){std::filesystem::create_directories(workspace()/L"reports");std::ofstream f(workspace()/L"reports/ui-smoke.txt");if(!smokePreviewVerified)throw std::runtime_error("Preview check did not complete.");f<<"PASS: native UI, "<<(gameOverlaySmoke?"game overlay placement and nonactivating input passthrough":fullscreenSmoke?"fullscreen controls":"embedded child-window placement")<<" and presenter startup after live alignment/timing edits; clean shutdown. Hidden controls: optical behavior not measured. No emitter writes, profile edits or display mode changes.\n";}
     }catch(const std::exception& e){std::filesystem::create_directories(workspace()/L"reports");std::ofstream f(workspace()/L"reports/last-error.txt");f<<e.what();if(!gpuTest&&!probe&&!smoke)MessageBoxA(nullptr,e.what(),"Vision Restoration",MB_OK|MB_ICONERROR);if(SUCCEEDED(co))CoUninitialize();return 1;}
     if(SUCCEEDED(co))CoUninitialize();return 0;
 }

@@ -6,8 +6,10 @@ whole screen was confirmed through the glasses on 2026-09-13, on a Samsung OLED 
 4K 240 Hz in HDR with software black frame insertion. Other displays, refresh rates and
 sequences are not optically verified.
 
-> **Game integration:** Geo11 has rendered stereo in Batman and Psychonauts in
-> their original windows; sustained-load timing is being retested. Window capture
+> **Game integration:** the shared Geo11 hook and game-depth controls are available
+> under **Games**. GPU output checks pass; broad game/optical validation remains
+> incomplete and the real-Geo11 test fixture crashes at shutdown, including without
+> our hook. Earlier game trials are historical and rolled back. Window capture
 > remains a proven fallback. The old ReShade hook remains nonworking.
 
 Double-click **Launch.cmd** to run `build/bin/Release/VisionRestoration.exe`.
@@ -104,7 +106,7 @@ Profiles now use version 10 for neutral reset. Older profiles retain their timin
 **Image alignment** stays beside the preview: convergence shifts the eye images
 horizontally, and scene depth changes the built-in stereo scene's camera separation.
 Both apply live. Diagnostic eye-isolation targets stay fixed.
-**Sources & games** selects stereo images, window capture or the whole screen converted with AI depth. Spout and Blender viewport inputs have been removed. The game-output controls connect existing Geo11 fixes; broader API coverage remains in development.
+**Sources & games** selects stereo images, VLC stereo movies, window capture or the whole screen converted with AI depth. Spout and Blender viewport inputs have been removed. The game-output controls connect existing Geo11 fixes; broader API coverage remains in development.
 **Profiles** saves named setups; timing and scene changes also autosave.
 **Diagnostics** reports presentation/USB timing and runs checks of the rendered
 pixels. **Advanced** holds per-eye timing, sequences, emitter connection and modes.
@@ -114,13 +116,24 @@ They do not establish that all visible leakage through a glasses lens is gone.
 See the [emitter timing fixes](EMITTER-TIMING-FIX.md) and
 [presentation synchronization](PRESENTATION-SYNC.md) for implementation details.
 
+## VLC stereo movies
+
+1. Install [64-bit VLC 3.x](https://www.videolan.org/vlc/). The application loads its optional library; it does not modify VLC settings or require the legacy NVIDIA stereo driver.
+2. Under **Input**, select **VLC stereo movie** and choose **Side by side** or **Top / bottom** to match the file. **Choose movie...** opens a local video file. Both half and full packed layouts use the same eye split; the image expands to the output area. The current presenter stretches to that area, so use a matching display aspect ratio or a movie with encoded letterboxing.
+3. Click **Start source**, then start your calibrated **3D preview** or fullscreen output. Use **Swap eyes** for right-first movies. Packing changes stop the source; start it again with the new setting.
+4. **Pause movie / Resume movie** controls both VLC video and audio while the output retains a complete stereo pair. **Movie position** seeks when supported; **Movie volume** adjusts sound. **Stop movie** stops decoding. At end-of-file the last complete pair remains visible; **Start source** starts the movie again.
+
+Installed VLC is detected in its standard Program Files location. A complete `vlc` folder beside the application also works, or **Choose VLC...** selects a portable installation's `vlc.exe`. Keep `libvlc.dll`, `libvlccore.dll` and `plugins` together. A 32-bit or VLC 4.x runtime is rejected with an error; other inputs continue to work without VLC installed.
+
+The integration uses the documented [VLC 3 video callbacks](https://videolan.videolan.me/vlc-3.0/group__libvlc__media__player.html) to receive video pixels at VLC's presentation time, then publishes complete GPU-shared pairs to the existing output. Audio remains with VLC. The VLC window and controls are not part of the movie pixels. CPU decoding and copies can limit high-resolution playback; this first implementation provides SDR pixels and does not claim faithful HDR movie output. External subtitle composition, disc/MVC decoding, other stereo formats and movie playback through the glasses remain unverified. Ordinary 2D video requires the separate AI desktop conversion while playing in VLC.
+
 ## Whole screen in 3D (AI depth)
 
 > Built 2026-09-15 and checked only on the desktop without glasses: the capture, the depth
 > network and the eye images work (`--screen-test`). Whether it looks right through the
 > glasses, and whether the network's GPU work disturbs the shutter timing, is not yet verified.
 
-**Sources & games > Input > Whole screen (AI depth)** converts everything on a display into 3D,
+**Input/Games > Source > Whole screen (AI depth)** converts everything on a display into 3D,
 the way Leia's SpaceWalker and Samsung's Reality Hub do: the display is captured, a depth
 network (Depth Anything V2 Small, through ONNX Runtime on DirectML) estimates the depth of every
 pixel, and both eyes are resampled from the picture with that depth. The network runs in its own
@@ -144,10 +157,14 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
 - The depth map is a few hundred pixels across and sampled bilinearly, so depth edges are soft
   over about 7 screen pixels; a moving edge also lags the picture by one network run. Guided
   upsampling of the depth to the picture's edges is the next step if that shows.
-- **Setup:** `tools/Get-Dependencies.ps1` downloads ONNX Runtime, DirectML and the Small model
-  (about 50 MB, into `models/`), and `build.ps1` then builds `VisionDepth.exe`.
-- **Stronger models for films.** `tools\Get-DepthModel.ps1 -Size base` or `-Size large` fetches the
-  bigger Depth Anything V2 models into `models/`; pick one under **Model** (a change restarts the
+- **Setup:** the portable release includes the AI helper and runtime. Download the
+  [Small model](https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx)
+  into `models/`. Source builders can instead run `tools/Get-Dependencies.ps1`, which downloads
+  the same runtime and model before `build.ps1` builds `VisionDepth.exe`.
+- **Stronger models for films.** Download [Base](https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx)
+  or [Large](https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx),
+  or use `tools\Get-DepthModel.ps1 -Size base` / `-Size large` in a source checkout. Base and Large
+  are non-commercial. Save each download with a distinct name in `models/`; pick one under **Model** (a change restarts the
   helper while the picture stays up; the choice is saved with the profile). **Choose model...**
   accepts any other ONNX depth model with an NCHW RGB input. Measured on an RTX 5070 Ti at the
   518 px input, with the app running at the same time:
@@ -170,27 +187,37 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
 
 ## Games (existing Geo11 fixes)
 
-Leave Vision Restoration open with the calibrated display and emitter selected.
-The existing fix renders both eyes; our adapter presents them in the game's own
-window. Mouse, keyboard and controller input stay with the game.
+The left workspace has **Tuning** and **Input/Games** tabs. Keep the calibrated
+output selected. The existing community fix renders the eyes; the app receives
+completed pairs and presents them in frame sequence.
 
-1. Install the suggested Geo11-compatible fix using its instructions or 3D Fix
-   Manager's profile. Follow its API and graphics-setting requirements.
-2. Close the game. Choose **Sources & games > Connect existing stereo fix...**
-   and select the actual rendering executable, sometimes inside `Binaries`.
-3. Launch normally. The app activates glasses timing for the foreground connected
-   game. Stop any separate fullscreen app preview first.
-4. Use the mod's own controls for depth, convergence, HUD and shader corrections.
+1. Install the game's compatible community fix according to its instructions.
+2. In **Input/Games**, use **Choose game...** to select the actual rendering EXE.
+   With the game closed, click **Connect game**. Geo11 is detected automatically.
+   Native and legacy inputs require their actual output layout; selecting frame
+   sequential cannot turn a mono backbuffer into stereo.
+3. Launch normally. The same tab matches the game's window and shows whether its
+   stereo provider is available. Click **Start game 3D** for output over the game with input passed through.
+   Use windowed/borderless mode on the selected output display. **Start game capture**
+   remains available for feeding the separate preview.
+4. Geo11 depth controls appear under **Game depth**. They save only when edited
+   or applied; the community fix retains shader corrections and auto-convergence.
 
-The same connector supports x86 and x64. It preserves the community renderer and
-shader files. Closing the host returns output to mono; hooks remain until exit.
+The connector supports x86 and x64. Geo11 uses its existing proxy interface;
+other supported providers use the capture add-on. Classic 3Dmigoto capture does
+not restore its NVIDIA stereo-rendering backend. See [tested capabilities](DIRECT-EYES.md).
 
-**Before updating or removing a community fix**, close the game and choose
-**Disconnect stereo output...**. This restores previous renderer/output settings,
-retaining unrelated settings and later depth tuning. The backup directory is
-`VisionRestoration.OutputBackup` beside the game EXE.
+Before updating or removing a fix, close the game and use **Disconnect adapter**.
+Connection ownership and restoration records live in
+`VisionRestoration.CaptureBackup` beside the game EXE.
 
-### Tested games and troubleshooting
+Existing SBS/TAB modes retain their supplied eye resolution. Katanga supplies
+full-resolution eyes. The adapter preserves the Geo11 output mode.
+
+### Historical trials and troubleshooting
+
+Both game deployments below were rolled back. They are not results for the new
+shared hook; see [current validation](STATUS.md) for the isolated test results.
 
 - **Batman: Arkham City GOTY:** DX11 x86, generic Geo11 0.7.11. User confirmed
   stable 3D and normal controls. Bloom/alpha defects remain; this test did not
@@ -215,8 +242,8 @@ retaining unrelated settings and later depth tuning. The backup directory is
 - **Proxy conflict:** the connector leaves the installation unchanged. That
   wrapper chain needs explicit compatibility work.
 
-Native NVAPI stereo, DX9/10, native DX12 and native media-player integration need
-separate backends. The old ReShade hook remains nonworking; historical notes are
+Native NVAPI stereo, DX9/10, native DX12 and other media-player integrations need
+separate backends. VLC SBS/TAB files use the direct movie source above. The old ReShade hook remains nonworking; historical notes are
 in [adapters/README.md](../adapters/README.md). Window capture and AI desktop remain.
 See [runtime documentation](../runtime/README.md) for implementation and test scope.
 
@@ -238,3 +265,12 @@ Start-Process .\build\bin\Release\VisionRestoration.exe --vblank -Wait
 CTest includes core tests and an integration test using the installed GPU and stereo image fixtures. It checks retained GPU frames across source restart/stop and HDR output format changes without physical emitter writes or display-mode changes. `--gpu-test` uses WARP; `--smoke-test` uses the actual GPU and writes an image of the application's own UI. These checks do not establish optical performance.
 
 Original application code is provided under GPL-3.0-or-later; preserve the upstream notices and licenses. Proprietary firmware is not bundled.
+
+
+### Prepare a game before launch
+
+In the left **Input/Games** tab, choose the game's EXE and click **Prepare game**. The app checks the current display/emitter prerequisites and connects the existing supported capture adapter if needed. Initial adapter connection requires the game to be closed. Existing classic 3Dmigoto installations still require their NVIDIA stereo rendering backend; preparing capture does not provide that backend.
+
+Launch the game normally through its launcher. While prepared, the app watches the exact executable path every 100 ms, including while minimized or on Tuning. It attaches the stereo reader when the matching process publishes its provider, without requiring a game window first. Once a complete pair and a foreground game window exist, the app starts its frame-sequential output automatically. Use windowed/borderless mode on the selected output display. Detection is automatic, not a guarantee of zero startup latency.
+
+The status distinguishes waiting for launch, waiting for the provider, connected/waiting for eyes, and active 3D. When the game process exits, the app remains prepared for its next launch. **Cancel preparation / stop game 3D**, Stop capture, switching sources/games, or Escape from output cancels preparation. A provider/startup failure is shown as an error, not reported as active 3D. Preparation does not repair a renderer that crashes before providing usable eyes.

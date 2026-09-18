@@ -14,6 +14,9 @@
 #include <avrt.h>
 #include "sync_protocol.h"
 #include "stereo_blit_shader.h"
+#include "geo11_output_mode.h"
+#include "producer_wait.h"
+#include "direct_eyes.h"
 #ifdef VISION_STEREO_TESTING
 #include "output_test_api.h"
 #endif
@@ -29,6 +32,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "geo11_controls.h"
 using Microsoft::WRL::ComPtr;
 namespace {
 namespace sync=vision::sync;
@@ -103,6 +107,32 @@ HRESULT compile(const char* entry,const char* profile,ID3DBlob** blob){
     if(FAILED(hr))log(errors?static_cast<char*>(errors->GetBufferPointer()):"Shader compilation failed",hr);return hr;
 }
 class StereoChain final:public IDXGISwapChain4 {
+    const vision::geo11::OutputMode outputMode_;
+    bool directCapture_=false,directReverse_=false;
+    std::unique_ptr<vision::direct::Producer> directProducer_;uint64_t directSerial_=0;
+    HRESULT publishDirect(std::stop_token stop){
+        if(!directProducer_)return S_OK;
+        if(!directProducer_->connected()){const auto hr=directProducer_->reset(true);return hr==DXGI_ERROR_WAS_STILL_DRAWING?S_FALSE:hr;}
+        const bool vertical=vision::geo11::vertical(outputMode_);
+        const UINT w=snapshotDesc_.Width,h=snapshotDesc_.Height;
+        const auto encoding=snapshotDesc_.Format==DXGI_FORMAT_R16G16B16A16_FLOAT?vision::direct::Encoding::LinearScRGB:
+            colorSpace_==DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020?vision::direct::Encoding::PQ2020:vision::direct::Encoding::SRGB;
+        for(unsigned eye=0;eye<2;++eye){
+            const unsigned packed=eye^unsigned(vision::geo11::reversed(outputMode_))^unsigned(directReverse_);
+            const D3D11_BOX box{vertical?0:packed*w/2,vertical?packed*h/2:0,0,vertical?w:(packed+1)*w/2,vertical?(packed+1)*h/2:h,1};
+            for(;;){
+                if(stop.stop_requested())return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+                if(!directProducer_->connected()){directProducer_->reset(true);return S_FALSE;}
+                const auto hr=directProducer_->submit(snapshot_.Get(),0,vision::direct::Eye(eye),directSerial_+1,encoding,stop,&box);
+                if(hr!=DXGI_ERROR_WAS_STILL_DRAWING){if(FAILED(hr))return hr;break;}
+                // A paused app may retain its pair indefinitely. Wait for
+                // ownership or disconnect; a slow reader is not a GPU error.
+                Sleep(1);
+            }
+        }
+        ++directSerial_;return S_OK;
+    }
+
     std::atomic<ULONG> refs_{1};ComPtr<ID3D11Device> gameDevice_;ComPtr<ID3D11DeviceContext> gameContext_;
     ComPtr<IDXGIFactory> factory_;DXGI_SWAP_CHAIN_DESC gameDesc_{};ComPtr<ID3D11Texture2D> gameBuffer_;
     std::mutex producerMutex_,stateMutex_;std::shared_ptr<PairPool> pool_;uint64_t serial_=0;
@@ -190,7 +220,7 @@ class StereoChain final:public IDXGISwapChain4 {
                 if(pendingPair_){
                     {std::lock_guard lock(stateMutex_);pendingPair_->serial=++serial_;pendingPair_->state=SlotState::Ready;}
                     pendingPair_=nullptr;pendingPairPool_.reset();
-                    if(++received_==1)log("Acquired first GPU-completed full-resolution Geo11 pair");
+                    if(++received_==1)log(outputMode_==vision::geo11::OutputMode::Katanga?"Acquired first GPU-completed full-resolution Geo11 pair":"Acquired first GPU-completed pair from the existing Geo11 packed output");
                 }
                 return S_OK;
             }
@@ -217,6 +247,8 @@ class StereoChain final:public IDXGISwapChain4 {
 #endif
         // Called after Geo11 finishes its eye packing, on the producer's own
         // immediate context. This ordering is essential: Katanga has no frame fence.
+        ID3D11Texture2D* source=gameBuffer_.Get();
+        if(outputMode_==vision::geo11::OutputMode::Katanga){
         if(!katangaView_){
             katangaMap_=OpenFileMappingW(FILE_MAP_READ,FALSE,pairMapping().c_str());if(!katangaMap_)return S_FALSE;
             katangaView_=static_cast<const volatile uint32_t*>(MapViewOfFile(katangaMap_,FILE_MAP_READ,0,0,4));
@@ -228,10 +260,13 @@ class StereoChain final:public IDXGISwapChain4 {
             if(FAILED(hr)){static bool reported=false;if(!reported){log("Cannot open provider pair on the game device",hr);reported=true;}return hr;}katangaTexture_=std::move(texture);katangaHandle_=handle;
             D3D11_TEXTURE2D_DESC description{};katangaTexture_->GetDesc(&description);char message[256];sprintf_s(message,"Provider texture: %ux%u format=%u array=%u mips=%u samples=%u usage=%u bind=%u misc=%u",description.Width,description.Height,description.Format,description.ArraySize,description.MipLevels,description.SampleDesc.Count,description.Usage,description.BindFlags,description.MiscFlags);log(message);
         }
-        D3D11_TEXTURE2D_DESC td{};katangaTexture_->GetDesc(&td);
-        // The fix may use its own resolution/upscaling settings. The provider
-        // defines two equal-width eyes, independently of the display dimensions.
-        if(td.Width<2||(td.Width%2)||!td.Height||td.ArraySize!=1||td.SampleDesc.Count!=1||!supported(td.Format))return E_INVALIDARG;
+        source=katangaTexture_.Get();
+        }
+        D3D11_TEXTURE2D_DESC td{};source->GetDesc(&td);
+        // Read the already packed output below Geo11. Its existing mode defines
+        // the packing; never change the community fix's output configuration.
+        const UINT split=vision::geo11::vertical(outputMode_)?td.Height:td.Width;
+        if(!td.Width||!td.Height||split<2||(split%2)||td.ArraySize!=1||td.SampleDesc.Count!=1||!supported(td.Format))return E_INVALIDARG;
         std::shared_ptr<PairPool> pool;
         {std::lock_guard lock(stateMutex_);pool=pool_;}
         if(!pool||!sameFormat(pool->desc,td)){
@@ -268,13 +303,14 @@ class StereoChain final:public IDXGISwapChain4 {
         {std::lock_guard lock(stateMutex_);
             auto reusable=[](const PairSlot& slot){return !slot.producerFence||slot.producerFence->GetCompletedValue()>=slot.fenceValue;};
             for(auto& slot:pool->slots)if(slot.state==SlotState::Free&&reusable(slot)){selected=&slot;break;}
-            if(!selected)for(auto& slot:pool->slots)if(slot.state==SlotState::Ready&&reusable(slot)&&(!selected||slot.serial<selected->serial))selected=&slot;
-            if(!selected)return S_FALSE;key=selected->state==SlotState::Ready?1:0;selected->state=SlotState::Writing;
+            // An unread pair belongs to the display. Apply producer
+            // backpressure instead of overwriting it when the queue is full.
+            if(!selected)return DXGI_ERROR_WAS_STILL_DRAWING;selected->state=SlotState::Writing;
         }
         const auto hr=selected->producerFence?(selected->producerFence->GetCompletedValue()>=selected->fenceValue?S_OK:HRESULT(WAIT_TIMEOUT)):selected->producerLock->AcquireSync(key,0);
-        if(hr!=S_OK){std::lock_guard lock(stateMutex_);selected->state=key?SlotState::Ready:SlotState::Free;return hr;}
+        if(hr!=S_OK){std::lock_guard lock(stateMutex_);selected->state=SlotState::Free;return hr==HRESULT(WAIT_TIMEOUT)?DXGI_ERROR_WAS_STILL_DRAWING:FAILED(hr)?hr:E_FAIL;}
         if(selected->producerFence)gameFenceContext_->Wait(selected->producerFence.Get(),selected->fenceValue);
-        gameContext_->CopyResource(selected->producer.Get(),katangaTexture_.Get());
+        gameContext_->CopyResource(selected->producer.Get(),source);
         HRESULT released;
         if(selected->producerFence){if(!(selected->fenceValue&1))++selected->fenceValue;else selected->fenceValue+=2;released=gameFenceContext_->Signal(selected->producerFence.Get(),selected->fenceValue);gameContext_->Flush();}
         else released=selected->producerLock->ReleaseSync(1);
@@ -285,7 +321,7 @@ class StereoChain final:public IDXGISwapChain4 {
     bool acceptPair(){
         std::shared_ptr<PairPool> pool;PairSlot* slot=nullptr;
         {std::lock_guard lock(stateMutex_);pool=pool_;if(!pool)return false;
-            for(auto& s:pool->slots)if(s.state==SlotState::Ready&&(!slot||s.serial>slot->serial))slot=&s;
+            for(auto& s:pool->slots)if(s.state==SlotState::Ready&&(!slot||s.serial<slot->serial))slot=&s;
             if(!slot)return false;slot->state=SlotState::Reading;
         }
         HRESULT hr=S_OK;
@@ -295,12 +331,16 @@ class StereoChain final:public IDXGISwapChain4 {
         if(SUCCEEDED(hr)&&acquired==S_OK){
             if(slot->consumerFence)outputFenceContext_->Wait(slot->consumerFence.Get(),slot->fenceValue);
             if(!snapshot_||!sameFormat(snapshotDesc_,pool->desc)){
-                auto td=pool->desc;td.Usage=D3D11_USAGE_DEFAULT;td.MiscFlags=0;td.CPUAccessFlags=0;td.MipLevels=1;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+                auto td=pool->desc;if(directCapture_)td.Format=outputFormat(td.Format);td.Usage=D3D11_USAGE_DEFAULT;td.MiscFlags=0;td.CPUAccessFlags=0;td.MipLevels=1;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
                 snapshotView_.Reset();snapshot_.Reset();hr=outputDevice_->CreateTexture2D(&td,nullptr,&snapshot_);
                 if(SUCCEEDED(hr))hr=outputDevice_->CreateShaderResourceView(snapshot_.Get(),nullptr,&snapshotView_);
-                if(SUCCEEDED(hr))snapshotDesc_=td;
+                if(SUCCEEDED(hr))snapshotDesc_=pool->desc;
             }
-            if(SUCCEEDED(hr)){outputContext_->CopyResource(snapshot_.Get(),slot->consumer.Get());copied=true;}
+            if(SUCCEEDED(hr)){outputContext_->CopyResource(snapshot_.Get(),slot->consumer.Get());copied=true;
+#ifdef VISION_STEREO_TESTING
+                {std::lock_guard lock(testMutex);if(slot->serial!=testStats.lastAcceptedSerial+1)++testStats.outOfOrderPairs;testStats.lastAcceptedSerial=slot->serial;++testStats.acceptedPairs;}
+#endif
+            }
             if(slot->consumerFence){++slot->fenceValue;outputFenceContext_->Signal(slot->consumerFence.Get(),slot->fenceValue);outputContext_->Flush();}else slot->consumerLock->ReleaseSync(0);
             std::lock_guard lock(stateMutex_);slot->state=SlotState::Free;
         }else{std::lock_guard lock(stateMutex_);slot->state=SlotState::Ready;}
@@ -313,7 +353,9 @@ class StereoChain final:public IDXGISwapChain4 {
         if(eye!=2&&snapshotView_){
             DXGI_SWAP_CHAIN_DESC1 d{};physical_->GetDesc1(&d);D3D11_VIEWPORT vp{0,0,float(d.Width),float(d.Height),0,1};outputContext_->RSSetViewports(1,&vp);
             auto* rt=outputTarget_.Get();outputContext_->OMSetRenderTargets(1,&rt,nullptr);
-            float values[12]={float(eye)*.5f,0,.5f,1,0,.5f/float(snapshotDesc_.Width),.5f/float(snapshotDesc_.Height),0,1,.5f,0,0};
+            const bool vertical=vision::geo11::vertical(outputMode_);
+            const int packedEye=eye^(vision::geo11::reversed(outputMode_)?1:0);
+            float values[12]={vertical?0:float(packedEye)*.5f,vertical?float(packedEye)*.5f:0,vertical?1:.5f,vertical?.5f:1,0,.5f/float(snapshotDesc_.Width),.5f/float(snapshotDesc_.Height),0,1,.5f,0,0};
             outputContext_->UpdateSubresource(constants_.Get(),0,nullptr,values,0,0);
             auto* cb=constants_.Get();outputContext_->PSSetConstantBuffers(0,1,&cb);auto* srv=snapshotView_.Get();outputContext_->PSSetShaderResources(0,1,&srv);
             auto* sampler=sampler_.Get();outputContext_->PSSetSamplers(0,1,&sampler);
@@ -331,8 +373,15 @@ class StereoChain final:public IDXGISwapChain4 {
             outputContext_->CopyResource(readback.Get(),back.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
             if(SUCCEEDED(outputContext_->Map(readback.Get(),0,D3D11_MAP_READ,0,&mapped))){
                 auto* p=static_cast<uint8_t*>(mapped.pData)+(td.Height/2)*mapped.RowPitch+(td.Width/2)*4;
-                uint32_t pixel=0;memcpy(&pixel,p,4);outputContext_->Unmap(readback.Get(),0);
+                uint32_t pixel=0;memcpy(&pixel,p,4);uint64_t hash=14695981039346656037ull,content=0,moment=0;
+                if(eye<2)for(UINT y=0;y<td.Height;++y){auto* row=static_cast<const uint8_t*>(mapped.pData)+y*mapped.RowPitch;
+                    for(UINT x=0;x<td.Width;++x){const auto* color=row+x*4;for(int c=0;c<3;++c){hash^=color[c];hash*=1099511628211ull;}
+                        // Colored geometry only: white FPS/OSD text can change
+                        // between physical eye frames even at zero separation.
+                        if(int(std::max({color[0],color[1],color[2]}))-int(std::min({color[0],color[1],color[2]}))>32){++content;moment+=x;}}}
+                outputContext_->Unmap(readback.Get(),0);
                 std::lock_guard lock(testMutex);++testStats.samples[eye];testStats.pixel[eye]=pixel;testStats.width=td.Width;testStats.height=td.Height;
+                if(eye<2){testStats.eyeHash[eye]=hash;testStats.eyeContent[eye]=content;testStats.eyeCentroidX[eye]=content?double(moment)/double(content):0;}
             }
         }
 #endif
@@ -366,7 +415,7 @@ class StereoChain final:public IDXGISwapChain4 {
                 if(FAILED(hr)){log("Physical ResizeBuffers failed",hr);lost_=true;break;}
             }
             if(space!=colorSpace_.load()){space=colorSpace_.load();physical_->SetColorSpace1(space);}
-            const bool connected=host.connect();auto* sh=host.shared;
+            const bool connected=!directCapture_&&host.connect();auto* sh=host.shared;
             const bool owns=connected&&(!sh->gamePid||sh->gamePid==GetCurrentProcessId()||qpc()-sh->gameHeartbeatQpc>frequency()*3);
             DWORD foregroundPid=0;GetWindowThreadProcessId(GetForegroundWindow(),&foregroundPid);
             bool focused=foregroundPid==GetCurrentProcessId();
@@ -386,7 +435,9 @@ class StereoChain final:public IDXGISwapChain4 {
                 const unsigned scheduled=unsigned(sync::nextDisplayRefresh(submitted,before.PresentCount,before.PresentRefreshCount,before.SyncRefreshCount)%cycle);
                 if(slot!=scheduled)++corrections;slot=scheduled;
             }
-            if(slot==0||!enabled)acceptPair();
+            if(slot==0||!enabled){
+                if(acceptPair()&&directProducer_){const auto transfer=publishDirect(stop);if(FAILED(transfer)){if(!stop.stop_requested())log("Geo11 direct-eye transfer failed",transfer);lost_=true;break;}}
+            }
             auto hr=draw(enabled?sync::slotEye(sequence,slot):0);if(FAILED(hr)){log("Output draw failed",hr);lost_=true;break;}
             hr=physical_->Present(1,DXGI_PRESENT_DO_NOT_WAIT);
             if(hr==DXGI_ERROR_WAS_STILL_DRAWING)continue;
@@ -434,7 +485,7 @@ class StereoChain final:public IDXGISwapChain4 {
                 sh->hookFlags=sync::HookSequences|sync::HookPatterns|sync::HookPhaseLocked|sync::HookRefreshSlots;sh->ringHead=ringHead;std::copy(ring.begin(),ring.end(),sh->ring);
                 sh->composed=1;ComPtr<IDXGISwapChainMedia> media;if(SUCCEEDED(physical_.As(&media))){DXGI_FRAME_STATISTICS_MEDIA ms{};if(SUCCEEDED(media->GetFrameStatisticsMedia(&ms)))sh->composed=ms.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED||ms.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE;}
                 wchar_t path[MAX_PATH];GetModuleFileNameW(nullptr,path,MAX_PATH);auto name=std::filesystem::path(path).filename().string();strncpy_s(sh->gameName,name.c_str(),_TRUNCATE);
-                strncpy_s(sh->message,!snapshot_?"Geo11: waiting for complete eyes":!visible?"Geo11 presentation occluded or minimized":!focused?"Geo11 mono: game does not have foreground input":enabled?"Geo11 full-resolution eyes; in-game sequential output":"Geo11 left-eye output; host stereo inactive",_TRUNCATE);
+                strncpy_s(sh->message,!snapshot_?"Geo11: waiting for complete eyes":!visible?"Geo11 presentation occluded or minimized":!focused?"Geo11 mono: game does not have foreground input":enabled?(outputMode_==vision::geo11::OutputMode::Katanga?"Geo11 full-resolution eyes; in-game sequential output":"Geo11 packed eyes; in-game sequential output"):"Geo11 left-eye output; host stereo inactive",_TRUNCATE);
                 MemoryBarrier();InterlockedIncrement(&sh->seq);if(host.event)SetEvent(host.event);
             }
             if(visible)slot=(slot+1)%cycle;else{slot=0;Sleep(20);}
@@ -444,12 +495,16 @@ class StereoChain final:public IDXGISwapChain4 {
                 reportAt=now;reportedPresents=presents;reportedPairs=received_;reportedCompleted=completed;missedRefreshes=corrections=producerBusy=0;maxPresentGap=0;
             }
         }
-        if(host.connect()&&host.shared->gamePid==GetCurrentProcessId()){InterlockedIncrement(&host.shared->seq);host.shared->active=0;MemoryBarrier();InterlockedIncrement(&host.shared->seq);if(host.event)SetEvent(host.event);}
+        if(!directCapture_&&host.connect()&&host.shared->gamePid==GetCurrentProcessId()){InterlockedIncrement(&host.shared->seq);host.shared->active=0;MemoryBarrier();InterlockedIncrement(&host.shared->seq);if(host.event)SetEvent(host.event);}
         if(mmcss)AvRevertMmThreadCharacteristics(mmcss);
     }
 public:
-    StereoChain(ID3D11Device* device,IDXGIFactory* factory,const DXGI_SWAP_CHAIN_DESC& d):gameDevice_(device),factory_(factory),gameDesc_(d){device->GetImmediateContext(&gameContext_);}
-    HRESULT initialize(){producerPermit_=CreateEventW(nullptr,FALSE,TRUE,nullptr);if(!producerPermit_)return HRESULT_FROM_WIN32(GetLastError());auto hr=createLogicalBuffer();if(SUCCEEDED(hr))hr=createOutput();if(SUCCEEDED(hr)){worker_=std::jthread([this](std::stop_token stop){output(stop);});log("Created independent in-game Geo11 output");}return hr;}
+    StereoChain(ID3D11Device* device,IDXGIFactory* factory,const DXGI_SWAP_CHAIN_DESC& d,vision::geo11::OutputMode mode):outputMode_(mode),gameDevice_(device),factory_(factory),gameDesc_(d){device->GetImmediateContext(&gameContext_);
+        wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);const auto config=std::filesystem::path(exe).parent_path()/L"VisionStereoCapture.ini";
+        wchar_t modeName[32]{};GetPrivateProfileStringW(L"VISION_CAPTURE",L"Mode",L"",modeName,32,config.c_str());
+        directCapture_=_wcsicmp(modeName,L"geo11")==0;directReverse_=GetPrivateProfileIntW(L"VISION_CAPTURE",L"RightFirst",0,config.c_str())!=0;
+    }
+    HRESULT initialize(){producerPermit_=CreateEventW(nullptr,FALSE,TRUE,nullptr);if(!producerPermit_)return HRESULT_FROM_WIN32(GetLastError());auto hr=createLogicalBuffer();if(SUCCEEDED(hr))hr=createOutput();if(SUCCEEDED(hr)&&directCapture_){directProducer_=std::make_unique<vision::direct::Producer>();hr=directProducer_->open(outputDevice_.Get());if(SUCCEEDED(hr))log("Geo11 direct-eye capture ready; app owns sequential presentation");}if(SUCCEEDED(hr)){worker_=std::jthread([this](std::stop_token stop){output(stop);});log("Created independent in-game Geo11 output");}return hr;}
     ~StereoChain(){log("Releasing logical swapchain");if(worker_.joinable()){worker_.request_stop();worker_.join();}log("Output worker stopped");if(katangaView_)UnmapViewOfFile(const_cast<uint32_t*>(katangaView_));if(katangaMap_)CloseHandle(katangaMap_);if(latency_)CloseHandle(latency_);if(producerPermit_)CloseHandle(producerPermit_);if(gameCompletionEvent_)CloseHandle(gameCompletionEvent_);if(gameCompletionTimer_)CloseHandle(gameCompletionTimer_);}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** p)override{if(!p)return E_POINTER;*p=nullptr;if(iid==__uuidof(IUnknown)||iid==__uuidof(IDXGIObject)||iid==__uuidof(IDXGIDeviceSubObject)||iid==__uuidof(IDXGISwapChain)||iid==__uuidof(IDXGISwapChain1)||iid==__uuidof(IDXGISwapChain2)||iid==__uuidof(IDXGISwapChain3)||iid==__uuidof(IDXGISwapChain4)){*p=static_cast<IDXGISwapChain4*>(this);AddRef();return S_OK;}return E_NOINTERFACE;}
     ULONG STDMETHODCALLTYPE AddRef()override{return ++refs_;}ULONG STDMETHODCALLTYPE Release()override{auto n=--refs_;if(!n)delete this;return n;}
@@ -464,13 +519,23 @@ public:
         std::lock_guard lock(producerMutex_);
         const bool noWait=(flags&DXGI_PRESENT_DO_NOT_WAIT)!=0;
         auto hr=finishGameGpu(noWait);if(FAILED(hr))return hr;
-        auto wait=WaitForSingleObject(producerPermit_,flags&DXGI_PRESENT_DO_NOT_WAIT?0:100);
-        if(wait!=WAIT_OBJECT_0)return flags&DXGI_PRESENT_DO_NOT_WAIT?DXGI_ERROR_WAS_STILL_DRAWING:S_OK;
-        hr=capturePair();
+        const auto deadline=qpc()+frequency()*5;
+        hr=vision::waitForProducerPermit(producerPermit_,noWait,[&]{return lost_||!IsWindow(gameDesc_.OutputWindow);},directCapture_?~ULONGLONG(0):5000);
+        if(FAILED(hr))return hr;
+        for(;;){
+            hr=capturePair();if(hr!=DXGI_ERROR_WAS_STILL_DRAWING)break;
+            if(noWait){SetEvent(producerPermit_);return hr;}
+            if(lost_||!IsWindow(gameDesc_.OutputWindow))return DXGI_ERROR_DEVICE_REMOVED;
+            // A full capture queue can mean the user paused the app. Keep
+            // the same producer frame pending until ownership returns.
+            if(!directCapture_&&qpc()>=deadline){SetEvent(producerPermit_);return DXGI_ERROR_WAIT_TIMEOUT;}
+            Sleep(1);
+        }
         static std::atomic<int> warnings{0};if(FAILED(hr)&&warnings++<8)log("Geo11 pair acquisition failed",hr);
+        if(FAILED(hr)){SetEvent(producerPermit_);return hr;}
         // Logical Present removed DXGI's implicit GPU backpressure. A CPU timer
         // alone cannot replace it: GPU-heavy frames can otherwise accumulate
-        // even when capture drops a pair. Bound all game work, not just copies.
+        // while the display consumes the queue. Bound all game work, not just copies.
         if(FAILED(hr=markGameGpu()))return hr;
         if(!noWait&&FAILED(hr=finishGameGpu(false))){lost_=true;log("Game GPU completion failed",hr);return hr;}
         ++logicalPresents_;return S_OK;
@@ -511,25 +576,27 @@ public:
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT n,UINT w,UINT h,DXGI_FORMAT f,UINT flags,const UINT*,IUnknown*const*)override{return ResizeBuffers(n,w,h,f,flags);}
     HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE,UINT,void*)override{return DXGI_ERROR_UNSUPPORTED;}
 };
-bool allowed(IUnknown* input,const DXGI_SWAP_CHAIN_DESC& d,ComPtr<ID3D11Device>& device){
+bool allowed(IUnknown* input,const DXGI_SWAP_CHAIN_DESC& d,ComPtr<ID3D11Device>& device,vision::geo11::OutputMode& mode){
     if(internal||!d.OutputWindow||d.SampleDesc.Count!=1||!supported(d.BufferDesc.Format))return false;
     if(FAILED(input->QueryInterface(IID_PPV_ARGS(&device))))return false;
     ID3D11Device* native=nullptr;UINT bytes=sizeof(native);
     if(SUCCEEDED(device->GetPrivateData(nativeDeviceTag,&bytes,&native))&&bytes==sizeof(native)&&native)device=native;
-    // The module is installed only through an explicit Geo11 output profile.
-    // Host absent means mono presentation, not a second display or window.
+    // Installation establishes the common loader chain. Keep the provider's
+    // own output mode, including its SBS default when the key is absent.
     wchar_t path[MAX_PATH];GetModuleFileNameW(nullptr,path,MAX_PATH);auto ini=std::filesystem::path(path).parent_path()/L"d3dxdm.ini";
-    wchar_t mode[64];GetPrivateProfileStringW(L"Device",L"direct_mode",L"",mode,64,ini.c_str());return _wcsicmp(mode,L"katanga_vr")==0;
+    wchar_t value[128]{};GetPrivateProfileStringW(L"Device",L"direct_mode",L"sbs",value,128,ini.c_str());
+    std::string ascii;for(auto c:value){if(!c)break;if(c>127)return false;ascii+=char(c);}
+    mode=vision::geo11::outputMode(ascii);return mode!=vision::geo11::OutputMode::Unsupported;
 }
 HRESULT STDMETHODCALLTYPE createChain(IDXGIFactory* f,IUnknown* d,DXGI_SWAP_CHAIN_DESC* desc,IDXGISwapChain** out){
-    if(!desc||!out)return realChain(f,d,desc,out);ComPtr<ID3D11Device> device;if(!allowed(d,*desc,device))return realChain(f,d,desc,out);
-    auto* chain=new StereoChain(device.Get(),f,*desc);auto hr=chain->initialize();if(FAILED(hr)){log("Stereo output creation failed",hr);chain->Release();*out=nullptr;return hr;}*out=chain;return S_OK;
+    if(!desc||!out)return realChain(f,d,desc,out);ComPtr<ID3D11Device> device;vision::geo11::OutputMode mode;if(!allowed(d,*desc,device,mode))return realChain(f,d,desc,out);
+    auto* chain=new StereoChain(device.Get(),f,*desc,mode);auto hr=chain->initialize();if(FAILED(hr)){log("Stereo output creation failed",hr);chain->Release();*out=nullptr;return hr;}*out=chain;return S_OK;
 }
 HRESULT STDMETHODCALLTYPE createChain1(IDXGIFactory2* f,IUnknown* d,HWND w,const DXGI_SWAP_CHAIN_DESC1* desc,const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* full,IDXGIOutput* restrict,IDXGISwapChain1** out){
     if(!desc||!out||desc->Stereo||restrict)return realChain1(f,d,w,desc,full,restrict,out);
     DXGI_SWAP_CHAIN_DESC old{};old.BufferDesc.Width=desc->Width;old.BufferDesc.Height=desc->Height;old.BufferDesc.Format=desc->Format;old.SampleDesc=desc->SampleDesc;old.BufferUsage=desc->BufferUsage;old.BufferCount=desc->BufferCount;old.OutputWindow=w;old.Windowed=full?full->Windowed:TRUE;old.SwapEffect=desc->SwapEffect;old.Flags=desc->Flags;if(full)old.BufferDesc.RefreshRate=full->RefreshRate;
-    ComPtr<ID3D11Device> device;if(!allowed(d,old,device))return realChain1(f,d,w,desc,full,restrict,out);
-    auto* chain=new StereoChain(device.Get(),f,old);auto hr=chain->initialize();if(FAILED(hr)){log("Stereo output creation failed",hr);chain->Release();*out=nullptr;return hr;}*out=chain;return S_OK;
+    ComPtr<ID3D11Device> device;vision::geo11::OutputMode mode;if(!allowed(d,old,device,mode))return realChain1(f,d,w,desc,full,restrict,out);
+    auto* chain=new StereoChain(device.Get(),f,old,mode);auto hr=chain->initialize();if(FAILED(hr)){log("Stereo output creation failed",hr);chain->Release();*out=nullptr;return hr;}*out=chain;return S_OK;
 }
 void attachFactory(ID3D11Device* device){
     if(internal||!device)return;std::lock_guard lock(hooksMutex);if(realChain&&realChain1)return;
@@ -555,6 +622,7 @@ void initialize(){
             if(ready)ready=MH_EnableHook(reinterpret_cast<void*>(create))==MH_OK&&MH_EnableHook(reinterpret_cast<void*>(open))==MH_OK;
         }
         log(ready?"VisionStereo11 initialized":"VisionStereo11 initialization failed");
+        if(ready){wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);vision::geo11::control::initialize(std::filesystem::path(executable).parent_path());}
     });
 }
 }

@@ -98,7 +98,7 @@ These categories need different work even though they share the output system:
 | DX9/10 legacy fixes | Preserve their API-specific rendering and mod conventions. | Separate legacy backend; evaluate relevant existing wrappers. |
 | Modern native stereo / geometry mods | Consume their completed eyes through the actual API and provider interface. | Dedicated DX12/Vulkan/etc. adapter. |
 | DX12 ReShade stereo shader | Access its stereo texture and integrate presentation. | ReShade output adapter, independent of legacy NVAPI emulation. |
-| Stereo media player | Accept its stereo rendering interface or decoder eye images. | Player/native API adapter; capture remains fallback. |
+| Stereo media player | Accept its stereo rendering interface or decoder eye images. | VLC 3.x direct SBS/TAB decoder source implemented; other player adapters remain future work. |
 
 NVAPI compatibility must implement real behavior: capability queries, handles,
 activation, separation/convergence, eye selection and the applicable resource
@@ -179,8 +179,10 @@ incorrect cursor depth, HUD shaders or raw-input bugs.
 - `adapters/vision_hook.cpp` and its ReShade installer are historical experiments.
   The current UI inspects fixes and removes old adapters; it does not enable the
   withdrawn Geo11 connector.
-- Native NVAPI stereo, DX9/10, native DX12 and native media-player adapters remain
-  unimplemented. There is no established-fix compatibility database in this app.
+- Native NVAPI stereo, DX9/10, native DX12 and other media-player adapters remain
+  unimplemented. VLC 3.x now supplies timed SBS/TAB video directly to the app
+  presenter; see [VLC setup and test scope](USAGE.md#vlc-stereo-movies).
+  There is no established-fix compatibility database in this app.
 - Multiple games/swapchains, unusual DXGI methods, HDR metadata and sustained
   load need broader testing. Counters alone do not prove optical quality.
 - Spout and Blender inputs were removed; window capture and AI desktop remain.

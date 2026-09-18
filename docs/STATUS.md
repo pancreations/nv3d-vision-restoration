@@ -1,5 +1,97 @@
 # Implementation and validation status
 
+## Experimental v0.1.0 release, 2026-09-17
+
+The portable release contains one app with the left **Tuning** and **Input/Games** tabs, prelaunch **Prepare game**, direct-eye transport, VLC stereo movie input, window capture, AI desktop, and emitter/calibration tools. Prepare watches the exact selected executable outside the visible Games panel, attaches when a provider appears, and starts frame-sequential output when complete eyes and a foreground window are available.
+
+**Known failures remain:** Resident Evil 2 loaded the bridge and delivered pairs, then reported a GPU hang/device loss. The latest standalone geo-11 comparison was reported unsuccessful by the user; its failure has not been diagnosed. Metal Gear Solid V also has unresolved reported startup failures; isolated reproduction of a geo-11 deferred-context crash and an INI workaround do not establish working gameplay. Neither game is supported by this release. Classic NVIDIA-driver-dependent 3Dmigoto rendering is not supplied by the app. LCD/QLED/Mini-LED optical separation remains unproven/nonworking in reported tests.
+
+The Prepare watcher UI test covers matching the full executable path, waiting for a provider, operation outside Input/Games, and cancellation. Transport tests check complete ordered eye pairs. These results do not prove real-game stability or optical timing. Entries below record earlier work and may describe superseded states.
+
+
+## Combined left workspace, 2026-09-17
+
+The left side has exactly **Tuning** and **Input/Games**. Game selection, adapter connection, source controls, matching game window and provider readiness now share one tab. Capture stays disabled until a live provider is available. Build, hidden UI/presenter smoke, connection regression and direct-eye transport tests pass. These checks do not establish optical or gameplay performance.
+
+MGSV's original v1.6 fix matches all 67 author archive files. A capture add-on startup recursion with its 3Dmigoto 1.2.50 was reproduced and repaired; the isolated legacy-provider fixture now transfers pairs and exits cleanly. Original game/fix files were preserved. Classic NVIDIA stereo rendering remains a separate unsolved requirement.
+
+## Geo11 direct-eye connection repaired, 2026-09-17
+
+**Input/Games > Connect game** now recognizes an existing geo-11 fix and connects it through the existing VisionStereo11 proxy, without ReShade or a replacement renderer. The provider's DLL bytes, shader resources, `d3dxdm.ini` output mode and tuning are preserved. The app receives explicit full-resolution eyes from Katanga and owns sequential display; existing SBS/TAB modes remain supported at their supplied resolution.
+
+The production x86/x64 runtimes passed real geo-11 0.7.11 geometry capture in all five supported output modes: 90 ordered stereo pairs per case, distinct left/right geometry, stalled-consumer backpressure and clean exit. The updated adapter keeps a paused reader's pending frames instead of treating consumer backpressure as a five-second GPU failure. The updated app is in its normal location, `build/bin/Release/VisionRestoration.exe`; the separate review executable was removed.
+
+The earlier failure with ReShade is avoided by selecting geo-11's own proxy interface. The independently reproduced upstream shutdown crash was isolated to the sample help-overlay include: removing just that include from the isolated sample also produces a clean exit. User shader fixes are not stripped or altered. Gameplay, sustained load and optical shutter timing still require validation. See [Direct stereo capture](DIRECT-EYES.md) and `tools/Test-Geo11Capture.ps1` for the reproducible scope; earlier dated entries below describe earlier states.
+
+
+## VLC stereo movie source implemented, 2026-09-16
+
+The app now plays local SBS and top/bottom movies directly through an optional,
+user-installed 64-bit VLC 3.x runtime. VLC supplies timed SDR video pixels and
+audio; complete pairs feed the existing app presenter and emitter timing.
+Input includes movie/VLC selection, pause/resume, volume, seeking and stop.
+VLC preferences are ignored for this embedded session and are not changed.
+Window capture is not used for this source.
+
+The real installed VLC 3.0.16 passes generated AVI decoding and shared GPU
+readback of distinct left/right colors in both layouts, a Unicode file path,
+pause/resume, seeking, end-of-file retention, source restart/stop, missing files
+and invalid packed dimensions. Independently encoded H.264 MP4 fixtures also
+pass both SBS/TAB GPU pixel checks. All 12 CTest suites pass. Tests disable audio and
+never instantiate an emitter; actual sound and optical movie playback require
+user-desktop checks. The final VLC Input-tab smoke check passes without USB writes.
+
+Direct playback currently uses CPU decoding and 8-bit SDR output. Faithful HDR
+movies, subtitles, disc/MVC and other stereo formats are not established. Ordinary
+2D VLC playback can use the existing separate AI desktop feature. This is direct
+VLC library playback in the app, rather than a replacement output module inside
+the standalone VLC interface. See [movie setup](USAGE.md#vlc-stereo-movies).
+
+## Shared Geo11 hook and game-depth controls implemented, 2026-09-15
+
+The app now has a **Games** tab with **Enable shared Geo11 hook...**, disconnect,
+fix inspection, a **Depth (%)** slider and **Game convergence**. It connects an
+existing fix through the same loader/output code for x86 and x64. No game names,
+shader hashes, compatibility-flag changes or replacement fix packages are used.
+
+The output adapter consumes the fix's existing `sbs`, `tab`, reversed variants,
+or `katanga_vr` output. Connection v3 changes only the common proxy chain in
+`d3dx.ini`; it does not write `d3dxdm.ini`. The original renderer bytes and fix
+settings remain recoverable. Legacy v1/v2 connections can still be removed.
+Unsupported output modes and conflicting wrapper chains are reported unchanged.
+Packed modes retain the source's eye resolution; Katanga provides full-resolution
+eyes. This is not a claim of full-catalogue game compatibility.
+
+Explicit depth-slider edits save `dm_separation` and, for manual convergence,
+`dm_convergence` in the selected fix. A process-specific control channel asks the
+hook to pulse the fix's configured reload chord only to Geo11's key-state reads.
+No keyboard input is sent to the game or other apps. Return focus to the game to
+apply; unsupported reload bindings use the next launch/manual reload instead.
+Reloading may pause rendering. Auto-convergence stays under the fix's control.
+
+Validation:
+
+- Connection/tuning regression passes, including read-only provider configuration,
+  preservation, rollback, both architectures, unsupported modes and auto-convergence.
+- All ten emitter-free GPU output cases pass: five modes in x86 and x64. Tests
+  inspect physical pixels, original HWND/input, producer/GPU stalls, resize,
+  disable and clean adapter shutdown. Forced display stalls still show transient
+  wrong slots before recovery; optical/gameplay stability is not established.
+- Real Geo11 0.7.11 geometry reaches sequential physical output in SBS, TAB and
+  Katanga for both architectures. Depth edits reduce geometry disparity to below
+  0.04 pixels, then restore more than four pixels, without restarting the fixture.
+- These real-Geo11 integration tests still **fail at process shutdown** inside
+  Geo11. An unhooked x64 baseline reproduces the same crash at `d3d11+0x214f68`.
+  Rendering/depth checks passing must not be reported as a passing complete suite.
+- App build and Games-tab smoke test pass. No actual game installation was changed
+  during this implementation.
+
+Artifacts: `build/shared-geo11-output-654fa3920cef46b1bebd4ce31a22e881`,
+`build/shared-geo11-integration-be8a07580d8742a19b206a21101d6cd3` (x64 depth),
+`build/shared-geo11-integration-c49040e4d7004d59a41ae9aa47c5f6ff` (x86 depth),
+`build/shared-geo11-integration-ca6b256a662f45fb986e4a98a96385cb` (TAB/Katanga),
+and `build/geo11-baseline-da48bbd77d6e4ddda4c8c722c240665c` (unhooked baseline).
+
 ## Corrected requirement: shared game hook allowed, 2026-09-15
 
 The user clarified: "i dont mind if we hook the game, but you were making game

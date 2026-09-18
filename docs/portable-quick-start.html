@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vision Restoration Quick Start</title>
+<style>
+  @page { size: Letter; margin: 0.55in 0.62in 0.58in; }
+  :root { color-scheme: light; --ink:#172016; --muted:#586456; --accent:#4f7d00; --pale:#eef5e4; --warn:#8b4b00; --line:#cad7bd; }
+  * { box-sizing: border-box; }
+  html { font-family: "Segoe UI", Arial, sans-serif; color:var(--ink); font-size:10.3pt; line-height:1.36; }
+  body { margin:0; }
+  h1 { font-size:28pt; line-height:1.05; margin:0 0 5pt; letter-spacing:-.5pt; }
+  h2 { font-size:17pt; margin:19pt 0 7pt; padding-bottom:3pt; border-bottom:1.5pt solid var(--line); }
+  h3 { font-size:12.5pt; margin:12pt 0 4pt; }
+  p { margin:4pt 0 7pt; }
+  ul, ol { margin:5pt 0 9pt 20pt; padding:0; }
+  li { margin:2.5pt 0; }
+  a { color:#315e92; text-decoration:none; overflow-wrap:anywhere; }
+  code { font-family:Consolas, monospace; font-size:9.2pt; background:#f0f2ee; padding:1pt 3pt; border-radius:2pt; }
+  .mast { border-left:8pt solid #76b900; padding:5pt 0 6pt 14pt; margin-bottom:14pt; }
+  .mast .sub { color:var(--muted); font-size:12pt; }
+  .badge { display:inline-block; color:white; background:var(--accent); font-size:8.5pt; font-weight:700; letter-spacing:.5pt; padding:3pt 7pt; border-radius:12pt; margin-bottom:9pt; }
+  .box { background:var(--pale); border:1pt solid var(--line); border-radius:5pt; padding:9pt 11pt; margin:9pt 0; break-inside:avoid; }
+  .warn { background:#fff4e5; border-color:#e2b877; }
+  .warn strong { color:var(--warn); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10pt; margin:8pt 0; }
+  .card { border:1pt solid var(--line); border-radius:5pt; padding:9pt 10pt; break-inside:avoid; }
+  .card h3 { margin-top:0; }
+  .steps { counter-reset:step; list-style:none; margin-left:0; }
+  .steps > li { counter-increment:step; position:relative; padding-left:27pt; margin:7pt 0; }
+  .steps > li::before { content:counter(step); position:absolute; left:0; top:-1pt; width:19pt; height:19pt; border-radius:50%; background:#76b900; color:#10180b; font-weight:800; text-align:center; line-height:19pt; }
+  .page { break-before:page; }
+  .small { color:var(--muted); font-size:8.8pt; }
+  .footer-note { margin-top:16pt; padding-top:6pt; border-top:1pt solid var(--line); color:var(--muted); font-size:8.7pt; }
+</style>
+</head>
+<body>
+  <div class="mast">
+    <div class="badge">PORTABLE WINDOWS RELEASE</div>
+    <h1>Vision Restoration</h1>
+    <div class="sub">Quick Start · Version 0.1.0</div>
+  </div>
+
+  <div class="box warn">
+    <strong>Experimental software.</strong> Verify each eye independently before normal use. Successful rendering and USB commands do not prove clean optical separation. Stop immediately if the image is uncomfortable or unstable.
+  </div>
+
+  <p>The ZIP also includes <strong>Vision Restoration README.pdf</strong>, generated from the current repository README, with release status and complete setup instructions.</p>
+  <h2>1 · Extract and start</h2>
+  <ol class="steps">
+    <li>Extract the entire portable ZIP to a normal writable folder. Do not run it from inside the ZIP.</li>
+    <li>Run <code>Start Vision Restoration.cmd</code>. Windows SmartScreen may warn because this experimental build is unsigned.</li>
+    <li>Select the intended display, match its current refresh rate, and begin with the built-in eye patterns.</li>
+  </ol>
+  <p>Profiles and diagnostic reports stay inside the extracted folder. Moving the complete folder to another location or PC keeps the application portable.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Included</h3>
+      <p>Main application, window capture, stereo image sources, AI screen-depth helper and runtime, emitter support, x86/x64 Geo11 integration, calibration tools, and RP2040 firmware.</p>
+    </div>
+    <div class="card">
+      <h3>Not included</h3>
+      <p>NVIDIA's proprietary emitter firmware, AI model weights, upstream Geo11 binaries, and game-specific community fixes. Direct download links are included below.</p>
+    </div>
+  </div>
+
+  <h2>2 · Choose an emitter</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Original NVIDIA USB emitter</h3>
+      <p>Requires user-supplied volatile firmware and a one-time WinUSB binding for both USB identities. Continue on the next page.</p>
+    </div>
+    <div class="card">
+      <h3>Vision RP2040 emitter</h3>
+      <p>Copy <code>firmware\VisionEmitter.uf2</code> to the board while it is in BOOTSEL mode. Reconnect it, start the app, and approve WinUSB setup if requested.</p>
+    </div>
+  </div>
+
+  <p class="footer-note">Vision Restoration is not affiliated with or endorsed by NVIDIA. “3D Vision” is a trademark of NVIDIA Corporation.</p>
+
+  <div class="page"></div>
+  <div class="mast"><h1>Original emitter setup</h1><div class="sub">Prepare firmware without installing the discontinued graphics stack</div></div>
+
+  <h2>3 · Prepare NVIDIA emitter firmware</h2>
+  <ol class="steps">
+    <li><a href="https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe">Download NVIDIA's standalone USB controller package 390.41 directly</a>. This is not a graphics driver; no Quadro GPU is needed for firmware extraction.</li>
+    <li><strong>Do not run NVIDIA's installer.</strong> Run <code>Prepare NVIDIA Firmware.cmd</code> and select the downloaded <code>3dvisioncontrollerdriver.exe</code>, or drag that EXE onto the helper.</li>
+    <li>The helper opens the package as an archive, validates the firmware, and writes <code>emitter.fw</code> beside the app. No separate extractor installation is needed. An already extracted <code>nvstusb*.sys</code> also works.</li>
+  </ol>
+  <div class="box">
+    NVIDIA’s firmware is proprietary and is intentionally absent from this release. The generated <code>emitter.fw</code> remains local to the user’s extracted folder.
+  </div>
+
+  <h2>4 · Allow WinUSB once</h2>
+  <p>The original emitter appears as two devices: <code>0955:7003</code> before firmware upload and <code>0955:0007</code> afterward. Each identity needs WinUSB once on each PC.</p>
+  <ol>
+    <li>Plug the emitter directly into the PC and start Vision Restoration.</li>
+    <li>Approve the administrator prompt when the app offers its portable WinUSB setup.</li>
+    <li>After firmware upload and restart, approve setup for the second identity if requested.</li>
+  </ol>
+  <p>If automatic setup fails, use <a href="https://zadig.akeo.ie/">Zadig</a>, enable <strong>Options → List All Devices</strong>, and bind only those two NVIDIA device IDs to WinUSB. Do not replace the graphics driver.</p>
+
+  <h2>5 · First optical check</h2>
+  <ol>
+    <li>Choose the display and click <strong>Match output rate</strong>.</li>
+    <li>Start the built-in stereo preview at a refresh rate supported by the display and emitter.</li>
+    <li>Look through one lens at a time. Use eye swap, phase, shutter, and sequence controls until each lens admits its intended image.</li>
+    <li>Save a profile only after repeating the check across the screen.</li>
+  </ol>
+  <div class="box warn"><strong>Display support varies.</strong> LCD, QLED, unusual scanout modes, HDR, multiple displays, and additional GPU generations still need broader optical validation.</div>
+
+  <div class="page"></div>
+  <div class="mast"><h1>Sources and games</h1><div class="sub">Use the input route that matches the content</div></div>
+
+  <h2>Stereo images and windows</h2>
+  <p>Open side-by-side or top/bottom stereo images directly, or capture a window that already produces packed stereo. Window capture is the simplest fallback when in-game integration is unsuitable.</p>
+
+  <h2>Game integration</h2>
+  <p>Vision Restoration can connect an existing Geo11-compatible DirectX 11 fix to the app’s emitter timing and sequential output. Geo11 is not included.</p>
+  <ol class="steps">
+    <li>Obtain the correct community fix for the game. Start with <a href="https://helixmod.blogspot.com/2017/05/3d-fix-manager.html">3D Fix Manager</a>, the <a href="https://helixmod.blogspot.com/">Helix Mod blog</a>, or the maintained <a href="https://github.com/ThreeDeeJay/geo-11/releases">Geo11 releases</a>. Follow that fix’s instructions and confirm it uses <code>force_stereo=2</code>.</li>
+    <li>Close the game. In Vision Restoration open the left <strong>Input/Games</strong> tab, select the rendering EXE using <strong>Choose game...</strong>, and click <strong>Prepare game</strong>. The display, emitter and timing must be ready first.</li>
+    <li>Leave Vision Restoration open and launch the game normally. The game retains its original window and input.</li>
+    <li>Before updating or removing the community fix, close the game and use <strong>Disconnect adapter</strong>.</li>
+  </ol>
+  <div class="box warn"><strong>Experimental feature: known game crashes.</strong> Resident Evil 2 and Metal Gear Solid V remain unresolved and are not supported games in this release. Preparing capture does not fix a crashing renderer.  The shared hook supports x86/x64 DX11 and several established Geo11 output modes, but it does not make every legacy fix compatible. Native DX12, DX9/10, Vulkan, native NVIDIA-driver stereo, and arbitrary proxy chains are not covered.</div>
+
+  <h2>Optional AI screen depth</h2>
+  <ol>
+    <li>Download <a href="https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx">Depth Anything V2 Small</a>, <a href="https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx">Base</a>, or <a href="https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx">Large</a> from ONNX Community.</li>
+    <li>Save each download in the included <code>models</code> folder with a distinct name, such as <code>depth-anything-v2-small-fp16.onnx</code>.</li>
+    <li>Restart the app and choose <strong>AI desktop</strong>. Small is fastest; Base and Large are slower and licensed for non-commercial use.</li>
+  </ol>
+  <p>AI depth is unrelated to normal stereo images, window capture, game integration, or emitter control.</p>
+
+  <div class="page"></div>
+  <div class="mast"><h1>Troubleshooting</h1><div class="sub">Useful checks before filing a report</div></div>
+
+  <h2>The app does not start</h2>
+  <ul>
+    <li>Extract the complete ZIP instead of launching from the archive.</li>
+    <li>Keep all DLLs and the <code>runtime</code> folder beside the executable.</li>
+    <li>Check whether antivirus quarantine removed an unsigned executable.</li>
+  </ul>
+
+  <h2>The original emitter is missing or cannot open</h2>
+  <ul>
+    <li>Confirm <code>emitter.fw</code> exists beside the app.</li>
+    <li>Bind WinUSB separately to <code>0955:7003</code> and <code>0955:0007</code>.</li>
+    <li>Connect directly rather than through a hub, then press <strong>Refresh USB</strong>.</li>
+  </ul>
+
+  <h2>A game fix is rejected</h2>
+  <ul>
+    <li>Select the actual game executable and close the game first.</li>
+    <li>Confirm the installed fix is Geo11-compatible and has <code>force_stereo=2</code>.</li>
+    <li>Disconnect Vision Restoration before changing the community fix.</li>
+    <li>Do not manually overwrite files in <code>VisionRestoration.OutputBackup</code>.</li>
+  </ul>
+
+  <h2>Diagnostics</h2>
+  <p>The portable folder keeps application diagnostics under <code>reports</code>. A connected game writes <code>VisionStereo11.log</code> in its own executable directory. Reports can contain hardware, display, timing, and local path information; review them before posting publicly.</p>
+
+  <h2>Project resources</h2>
+  <ul>
+    <li><a href="https://github.com/pancreations/nv3d-vision-restoration">Vision Restoration source and issue tracker</a></li>
+    <li><a href="https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe">Direct download: NVIDIA standalone 3D Vision USB controller package 390.41</a></li>
+    <li><a href="https://www.7-zip.org/">7-Zip</a> project (the helper includes a portable extractor; manual extraction is optional)</li>
+    <li><a href="https://zadig.akeo.ie/">Zadig WinUSB utility</a></li>
+    <li><a href="https://github.com/ThreeDeeJay/geo-11/releases">Maintained Geo11 releases</a></li>
+    <li><a href="https://helixmod.blogspot.com/">Helix Mod community fixes</a></li>
+    <li><a href="https://helixmod.blogspot.com/2017/05/3d-fix-manager.html">3D Fix Manager</a></li>
+    <li><a href="https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx">Depth Anything V2 Small model</a> (Apache-2.0)</li>
+    <li><a href="https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx">Depth Anything V2 Base model</a> (non-commercial)</li>
+    <li><a href="https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx">Depth Anything V2 Large model</a> (non-commercial)</li>
+  </ul>
+
+  <p class="footer-note">Copyright notices and component licenses are in the release’s <code>licenses</code> folder. Main application: GPL-3.0-or-later.</p>
+</body>
+</html>

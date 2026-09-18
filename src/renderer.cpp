@@ -65,7 +65,7 @@ struct DrawState {
         check(device->CreatePixelShader(compiled::ps,sizeof(compiled::ps),nullptr,&ps),"Pixel shader");
         D3D11_BUFFER_DESC b{};b.ByteWidth=144;b.Usage=D3D11_USAGE_DYNAMIC;b.BindFlags=D3D11_BIND_CONSTANT_BUFFER;b.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;check(device->CreateBuffer(&b,nullptr,&params),"Shader parameters");D3D11_SAMPLER_DESC s{};s.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;s.AddressU=s.AddressV=s.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;s.MaxLOD=D3D11_FLOAT32_MAX;check(device->CreateSamplerState(&s,&sampler),"Image sampler");
     }
-    void accept(ID3D11Device* device,std::shared_ptr<StereoFrame> f){if(!f || (active && f->pairId==active->pairId && f==active))return;
+    bool accept(ID3D11Device* device,std::shared_ptr<StereoFrame> f){if(!f)return false;if(active && f->pairId==active->pairId && f==active)return true;
         Opened* entry=nullptr;for(auto& o:pool)if(o.frame==f.get()&&o.owner.lock()==f){entry=&o;break;}
         if(!entry){
             // A pool texture that the source replaced (new size or format) has died with its frame;
@@ -74,8 +74,9 @@ struct DrawState {
             Opened o;o.owner=f;o.frame=f.get();check(device->OpenSharedResource(f->sharedHandle,IID_PPV_ARGS(&o.texture)),"Open stereo pair on output adapter");check(o.texture.As(&o.key),"Shared pair mutex");check(device->CreateShaderResourceView(o.texture.Get(),nullptr,&o.view),"Stereo pair view");
             pool.push_back(std::move(o));entry=&pool.back();
         }
-        if(entry->key->AcquireSync(0,0)!=S_OK)return;
+        if(entry->key->AcquireSync(0,0)!=S_OK)return false;
         release();active=std::move(f);opened=entry->texture;view=entry->view;key=entry->key;
+        return true;
     }
     void draw(ID3D11DeviceContext* context,unsigned w,unsigned h,const Settings& s,Eye eye,bool preview,int pattern,double time,bool overlay=false,bool guardSlot=false,uint64_t refreshIndex=0){
         float p[36]={float(w),float(h),float(time),0,float(int(eye)),float(pattern),preview?1.f:0.f,s.hdr?1.f:0.f,s.depth*4,s.peakNits,s.convergence,s.swapEyes?1.f:0.f,0,0,1,1,s.bandHeight,s.bandCenter,overlay?1.f:0.f,float(s.phaseUs),s.imageGain,std::clamp(s.blackFloor,0.f,.3f),0,0};
@@ -85,7 +86,7 @@ struct DrawState {
         if(pattern==3 && active){p[12]=float(int(active->packing));p[13]=float(int(active->encoding));p[14]=float(active->width);p[15]=float(active->height);p[32]=active->sdrWhiteLevel;if(active->alignmentApplied)p[10]=0;}
         else if(pattern==3)p[4]=float(int(Eye::Black));
         D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(params.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped),"Map shader constants");memcpy(mapped.pData,p,sizeof(p));context->Unmap(params.Get(),0);
-        auto* cb=params.Get();auto* srv=view.Get();auto* sm=sampler.Get();context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,&cb);context->PSSetShaderResources(0,1,&srv);context->PSSetSamplers(0,1,&sm);context->Draw(3,0);srv=nullptr;context->PSSetShaderResources(0,1,&srv);
+        auto* cb=params.Get();ID3D11ShaderResourceView* views[2]{};views[active&&active->packing==Packing::SeparateEyes?1:0]=view.Get();auto* sm=sampler.Get();context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,&cb);context->PSSetShaderResources(0,2,views);context->PSSetSamplers(0,1,&sm);context->Draw(3,0);views[0]=views[1]=nullptr;context->PSSetShaderResources(0,2,views);
     }
 };
 // A game rendering on the same GPU queues command buffers of several milliseconds; the graphics
@@ -158,7 +159,6 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             uint64_t slotSeq=slotIndex;
             if(!preview&&lastObserved){UINT previous=0;if(SUCCEEDED(surface.swap->GetLastPresentCount(&previous)))slotSeq=refreshForPresent(previous+1,lastObserved,lastRefresh);}
             auto slot=sequenceSlot(s.sequence,slotSeq,false);
-            if(slot.pairBoundary){draw.accept(surface.device.Get(),source_.latest());pairTime=qpc()-begin;}
             auto emitterStatus=emitter_.status();auto usbState=emitterStatus.state;
             auto resync=[&]{emitter_.suspend();blank=16;slotIndex=0;clock.reset();records.clear();lastObserved=lastRefresh=0;local.resyncs++;local.lastResyncSec=qpc()-begin;local.timingPassed=false;};
             if(manualResync)resync(); // the viewer asked for it; nothing else here restarts synchronization
@@ -177,6 +177,9 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             lastUsbLate=emitterStatus.late;
             bool emitterAvailable=usbState==EmitterState::Ready||usbState==EmitterState::Running||usbState==EmitterState::Simulated;
             bool mute=paused || (!preview && (blank>0 || clock.samples<8 || !emitterAvailable));Eye eye=mute?Eye::Black:slot.eye;
+            // Do not consume ordered source pairs during pause or acquisition
+            // blanking: no eye image is being submitted in those slots.
+            if(slot.pairBoundary&&!mute){auto next=source_.forPresentation();if(draw.accept(surface.device.Get(),next))source_.presented(next);pairTime=qpc()-begin;}
             surface.bind();draw.draw(surface.context.Get(),surface.width,surface.height,s,eye,preview && !paused,pattern,pairTime,overlay&&!mute,!mute&&slot.eye==Eye::Black,slotIndex);
             // Predictive trigger for every backend: the eye command is timed from the predicted
             // vblank of the refresh this present will land on, not from retrospective statistics.
@@ -513,11 +516,13 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
     ComPtr<ID3D11Texture2D> output,staging;check(device->CreateTexture2D(&td,nullptr,&output),"Packed test output");ComPtr<ID3D11RenderTargetView> rtv;check(device->CreateRenderTargetView(output.Get(),nullptr,&rtv),"Packed test target");
     td.BindFlags=0;td.Usage=D3D11_USAGE_STAGING;td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;check(device->CreateTexture2D(&td,nullptr,&staging),"Packed test staging");
     auto* rt=rtv.Get();context->OMSetRenderTargets(1,&rt,nullptr);D3D11_VIEWPORT vp{0,0,160,80,0,1};context->RSSetViewports(1,&vp);
-    for(Packing packing:{Packing::SideBySide,Packing::TopBottom}){
-        std::vector<uint32_t> pixels(16*8);for(int y=0;y<8;y++)for(int x=0;x<16;x++)pixels[y*16+x]=(packing==Packing::SideBySide?x<8:y<4)?0xff0000ff:0xff00ff00;
-        td.Width=16;td.Height=8;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;td.Usage=D3D11_USAGE_IMMUTABLE;td.CPUAccessFlags=0;D3D11_SUBRESOURCE_DATA data{pixels.data(),16*4,0};ComPtr<ID3D11Texture2D> input;check(device->CreateTexture2D(&td,&data,&input),"Packed input");
+    for(Packing packing:{Packing::SideBySide,Packing::TopBottom,Packing::SeparateEyes}){
+        const bool separate=packing==Packing::SeparateEyes;
+        std::vector<uint32_t> pixels(16*8*(separate?2:1));for(size_t n=0;n<pixels.size();++n){const int x=int(n%16),y=int(n/16);pixels[n]=(separate?y<8:packing==Packing::SideBySide?x<8:y<4)?0xff0000ff:0xff00ff00;}
+        td.Width=16;td.Height=8;td.ArraySize=separate?2:1;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;td.Usage=D3D11_USAGE_IMMUTABLE;td.CPUAccessFlags=0;D3D11_SUBRESOURCE_DATA data[2]{{pixels.data(),16*4,0},{separate?pixels.data()+16*8:nullptr,16*4,0}};ComPtr<ID3D11Texture2D> input;check(device->CreateTexture2D(&td,data,&input),"Stereo test input");
         draw.release();check(device->CreateShaderResourceView(input.Get(),nullptr,&draw.view),"Packed input view");draw.active=std::make_shared<StereoFrame>();draw.active->packing=packing;draw.active->encoding=Encoding::SRGB;draw.active->width=16;draw.active->height=8;
         for(bool hook:{false,true})for(int eye:{0,1})for(float convergence:{-.05f,0.f,.05f}){
+            if(hook&&separate)continue; // legacy hook shader only consumes packed textures
             Settings s;s.convergence=convergence;draw.draw(context.Get(),160,80,s,Eye(eye),false,3,0);
             if(hook){
                 float p[16]{packing==Packing::SideBySide?eye*.5f:0,packing==Packing::TopBottom?eye*.5f:0,packing==Packing::SideBySide?.5f:1,packing==Packing::TopBottom?.5f:1,(eye==0?1.f:-1.f)*convergence,.5f/16,.5f/8,0,1,.5f,0,0};
@@ -532,7 +537,7 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
             context->Unmap(staging.Get(),0);if(!correct)throw std::runtime_error(hook?"Hook convergence/eye seam failed.":"Presenter convergence/eye seam failed.");
         }
     }
-    draw.release();report<<"Presenter and hook: SBS/TB eye boundaries, signed convergence and black margins PASS\n";
+    draw.release();report<<"Presenter: separate texture-array eyes, SBS/TB eye boundaries, signed convergence and black margins PASS; hook: SBS/TB PASS\n";
     // Capture must preserve scRGB values in HDR. SDR uses the captured display's
     // white level, not a curve that lifts shadows or darkens every white.
     for(bool hdr:{false,true})for(float white:{1.f,2.5f,4.f}){

@@ -44,8 +44,8 @@ public:
     bool started()const{return header_!=nullptr;}
     bool start(const std::filesystem::path& helper,const std::filesystem::path& model,const LUID& adapter,unsigned sourceWidth,unsigned sourceHeight,unsigned maxNetSide,const std::filesystem::path& log){
         stop();error_.clear();std::error_code ec;
-        if(helper.empty()||!std::filesystem::exists(helper,ec)){error_="VisionDepth.exe is not beside the app: run tools/Get-Dependencies.ps1 and build.ps1 to build the depth helper.";return false;}
-        if(model.empty()||!std::filesystem::exists(model,ec)){error_="No depth model found: tools/Get-Dependencies.ps1 downloads Depth Anything V2 Small into models/, or choose a .onnx file.";return false;}
+        if(helper.empty()||!std::filesystem::exists(helper,ec)){error_="VisionDepth.exe is missing. Restore the complete Vision Restoration portable release.";return false;}
+        if(model.empty()||!std::filesystem::exists(model,ec)){error_="No AI depth model was found. Use a model link in the Quick Start PDF, place the .onnx file in models, or choose a compatible .onnx file.";return false;}
         const std::wstring suffix=std::to_wstring(GetCurrentProcessId());
         mapping_=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,DWORD(depth::channelBytes>>32),DWORD(depth::channelBytes&0xffffffffu),(std::wstring(depth::mappingPrefix)+suffix).c_str());
         if(!mapping_){error_="Cannot create the depth channel.";return false;}

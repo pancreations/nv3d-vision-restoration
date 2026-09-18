@@ -22,7 +22,7 @@ int64_t ticks(){LARGE_INTEGER t;QueryPerformanceCounter(&t);return t.QuadPart;}
 unsigned clicks=0,keys=0;
 LRESULT CALLBACK wndproc(HWND w,UINT m,WPARAM a,LPARAM b){if(m==WM_LBUTTONDOWN)++clicks;if(m==WM_KEYDOWN)++keys;return DefWindowProcW(w,m,a,b);}
 void pump(){MSG m;while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){TranslateMessage(&m);DispatchMessageW(&m);}}
-int wmain(){
+int wmain(int argc,wchar_t** argv){
     setvbuf(stdout,nullptr,_IONBF,0);
     std::jthread watchdog([](std::stop_token stop){for(int i=0;i<300&&!stop.stop_requested();++i)Sleep(100);if(!stop.stop_requested()){std::puts("FAIL: output test timed out");TerminateProcess(GetCurrentProcess(),10);}});
     try{
@@ -35,7 +35,11 @@ int wmain(){
         }
         wchar_t exe[MAX_PATH];GetModuleFileNameW(nullptr,exe,MAX_PATH);auto directory=std::filesystem::path(exe).parent_path();
         auto ini=directory/L"d3dxdm.ini";require(!std::filesystem::exists(ini),"Run the output tests in an empty test directory");
-        require(WritePrivateProfileStringW(L"Device",L"direct_mode",L"katanga_vr",ini.c_str())!=FALSE,"Cannot create test-only provider configuration");
+        const std::wstring mode=argc>1?argv[1]:L"katanga_vr";
+        const bool katanga=mode==L"katanga_vr",vertical=mode==L"tab"||mode==L"tab_reversed",reversed=mode==L"sbs_reversed"||mode==L"tab_reversed";
+        require(katanga||vertical||mode==L"sbs"||mode==L"sbs_reversed","Unknown test packing");
+        require(WritePrivateProfileStringW(L"Device",L"direct_mode",mode.c_str(),ini.c_str())!=FALSE,"Cannot create test-only provider configuration");
+        std::printf("Existing Geo11 output mode: %ls\n",mode.c_str());
         auto hostName=L"Local\\VisionRestoration.GameSync.Test."+std::to_wstring(GetCurrentProcessId());
         HANDLE mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,sizeof(sync::Shared),hostName.c_str());require(mapping!=nullptr,"Host mapping");
         auto* sh=static_cast<sync::Shared*>(MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(sync::Shared)));require(sh!=nullptr,"Host view");
@@ -76,14 +80,22 @@ int wmain(){
         ComPtr<IDXGIDevice> gd;ComPtr<IDXGIAdapter> actual;check(device.As(&gd),"Actual GPU");check(gd->GetAdapter(&actual),"Actual adapter");DXGI_ADAPTER_DESC actualDesc{};actual->GetDesc(&actualDesc);std::printf("Adapter: %ls vendor=%04x device=%04x\n",actualDesc.Description,actualDesc.VendorId,actualDesc.DeviceId);
         // Publish through the same established Geo11 protocol. The runtime
         // isolates the name to this process automatically, without a game rule.
-        HANDLE pairMap=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,4,L"Local\\KatangaMappedFile");require(pairMap!=nullptr,"Pair mapping");
-        auto* handle=static_cast<uint32_t*>(MapViewOfFile(pairMap,FILE_MAP_ALL_ACCESS,0,0,4));require(handle!=nullptr,"Pair view");
+        HANDLE pairMap=katanga?CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,4,L"Local\\KatangaMappedFile"):nullptr;require(!katanga||pairMap!=nullptr,"Pair mapping");
+        auto* handle=pairMap?static_cast<uint32_t*>(MapViewOfFile(pairMap,FILE_MAP_ALL_ACCESS,0,0,4)):nullptr;require(!katanga||handle!=nullptr,"Pair view");
         ComPtr<ID3D11Texture2D> pair;
         auto publish=[&](UINT w,UINT h){
-            std::vector<uint32_t> pixels(size_t(w)*2*h);for(UINT y=0;y<h;++y)for(UINT x=0;x<w*2;++x)pixels[size_t(y)*w*2+x]=x<w?0xff0000ff:0xff00ff00;
-            D3D11_TEXTURE2D_DESC td{};td.Width=w*2;td.Height=h;td.MipLevels=td.ArraySize=1;td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;td.SampleDesc.Count=1;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
-            D3D11_SUBRESOURCE_DATA init{pixels.data(),w*2*4,0};ComPtr<ID3D11Texture2D> next;check(device->CreateTexture2D(&td,&init,&next),"Producer eye pair");
-            ComPtr<IDXGIResource> resource;check(next.As(&resource),"Pair sharing");HANDLE shared=nullptr;check(resource->GetSharedHandle(&shared),"Pair handle");pair=std::move(next);*handle=uint32_t(uintptr_t(shared));context->Flush();
+            const UINT packedWidth=katanga?w*2:w;
+            std::vector<uint32_t> pixels(size_t(packedWidth)*h);
+            for(UINT y=0;y<h;++y)for(UINT x=0;x<packedWidth;++x){const bool first=vertical?y<h/2:x<packedWidth/2;pixels[size_t(y)*packedWidth+x]=(first!=reversed)?0xff0000ff:0xff00ff00;}
+            if(katanga){
+                D3D11_TEXTURE2D_DESC td{};td.Width=packedWidth;td.Height=h;td.MipLevels=td.ArraySize=1;td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;td.SampleDesc.Count=1;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
+                D3D11_SUBRESOURCE_DATA init{pixels.data(),packedWidth*4,0};ComPtr<ID3D11Texture2D> next;check(device->CreateTexture2D(&td,&init,&next),"Producer eye pair");
+                ComPtr<IDXGIResource> resource;check(next.As(&resource),"Pair sharing");HANDLE shared=nullptr;check(resource->GetSharedHandle(&shared),"Pair handle");pair=std::move(next);*handle=uint32_t(uintptr_t(shared));
+            }else{
+                ComPtr<ID3D11Texture2D> back;check(chain->GetBuffer(0,IID_PPV_ARGS(&back)),"Geo11 packed backbuffer");
+                context->UpdateSubresource(back.Get(),0,nullptr,pixels.data(),packedWidth*4,0);
+            }
+            context->Flush();
             check(chain->Present(0,0),"Logical Present");
         };
         publish(320,180);
@@ -99,7 +111,8 @@ int wmain(){
         std::puts("PASS: original HWND and input handler retained; no focus change");
         VisionOutputTestStats pacedBefore{};read(&pacedBefore);
         for(int n=0;n<80;++n){check(chain->Present(0,0),"Continuously producing game Present");pump();}
-        auto paced=wait([&](const auto& s){return s.pairs>=pacedBefore.pairs+80;},"Producer pairs were not received");
+        auto paced=wait([&](const auto& s){return s.acceptedPairs>=pacedBefore.acceptedPairs+80;},"Display did not consume every producer pair");
+        require(paced.outOfOrderPairs==0,"Output skipped or reordered a completed pair");
         require(paced.presents-pacedBefore.presents>=156,"Producer ran without waiting for complete display cycles");
         std::printf("PASS: 80 producer frames paced across %llu physical presents\n",paced.presents-pacedBefore.presents);
         delayProducer(500);
@@ -146,7 +159,7 @@ int wmain(){
         for(int i=0;i<20;++i){pump();Sleep(5);}VisionOutputTestStats after{};read(&after);require(after.samples[1]==mono.samples[1]&&after.samples[2]==mono.samples[2],"Stereo slots continued after host disable");
         std::puts("PASS: host disable returns to mono");
         context->ClearState();chain.Reset();pair.Reset();context.Reset();device.Reset();DestroyWindow(window);
-        heartbeat.request_stop();heartbeat.join();UnmapViewOfFile(handle);CloseHandle(pairMap);UnmapViewOfFile(sh);CloseHandle(mapping);
+        heartbeat.request_stop();heartbeat.join();if(handle)UnmapViewOfFile(handle);if(pairMap)CloseHandle(pairMap);UnmapViewOfFile(sh);CloseHandle(mapping);
         std::filesystem::remove(ini);std::puts("PASS: clean shutdown; optical sync and actual game scenes are separate checks");return 0;
     }catch(const std::exception& e){std::printf("FAIL: %s\n",e.what());return 1;}
 }

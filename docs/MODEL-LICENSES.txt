@@ -1,0 +1,33 @@
+Vision Restoration AI depth model notices
+=========================================
+
+The model files are unmodified fp16 ONNX exports published by ONNX Community.
+They are optional data files and are not distributed in the public Vision
+Restoration release. Users can download them from the official sources below.
+
+Depth Anything V2 Small
+  File: depth-anything-v2-small-fp16.onnx
+  Source: https://huggingface.co/onnx-community/depth-anything-v2-small
+  Upstream project: https://github.com/DepthAnything/Depth-Anything-V2
+  License: Apache License 2.0
+  License text: https://www.apache.org/licenses/LICENSE-2.0
+  ONNX conversion: ONNX Community
+
+Depth Anything V2 Base
+  File: depth-anything-v2-base-fp16.onnx
+  Source: https://huggingface.co/onnx-community/depth-anything-v2-base
+  Upstream project: https://github.com/DepthAnything/Depth-Anything-V2
+  License: Creative Commons Attribution-NonCommercial 4.0 International
+  License text: https://creativecommons.org/licenses/by-nc/4.0/legalcode
+  ONNX conversion: ONNX Community
+
+Depth Anything V2 Large
+  File: depth-anything-v2-large-fp16.onnx
+  Source: https://huggingface.co/onnx-community/depth-anything-v2-large
+  Upstream project: https://github.com/DepthAnything/Depth-Anything-V2
+  License: Creative Commons Attribution-NonCommercial 4.0 International
+  License text: https://creativecommons.org/licenses/by-nc/4.0/legalcode
+  ONNX conversion: ONNX Community
+
+Base and Large are licensed for non-commercial use. Do not use or redistribute
+those weights for a commercial purpose without obtaining appropriate rights.

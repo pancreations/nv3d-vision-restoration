@@ -6,7 +6,10 @@
 struct VisionOutputTestStats {
     uint64_t samples[3]{};
     uint32_t pixel[3]{};
+    uint64_t eyeHash[2]{},eyeContent[2]{};
+    double eyeCentroidX[2]{};
     uint64_t pairs=0;
+    uint64_t acceptedPairs=0,lastAcceptedSerial=0,outOfOrderPairs=0;
     uint64_t presents=0;
     uint64_t producerStalls=0;
     uint64_t outputStalls=0,alignedRun=0,misaligned=0;

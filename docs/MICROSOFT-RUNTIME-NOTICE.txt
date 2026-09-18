@@ -1,0 +1,13 @@
+Microsoft Visual C++ Runtime
+============================
+
+The portable release may include Microsoft Visual C++ runtime DLLs from the
+Visual Studio 2022 redistributable directory. They are unmodified and are
+redistributed under the Microsoft Visual Studio license terms.
+
+Current Microsoft deployment documentation:
+https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+
+The portable release also contains Microsoft ONNX Runtime and DirectML binaries.
+Their individual licenses and third-party notices are included beside the
+other release licenses.

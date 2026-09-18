@@ -1,5 +1,6 @@
 cbuffer Params:register(b0){float4 screen;float4 state;float4 options;float4 source;float4 band;float4 extra;float4 leak0;float4 leak1;float4 capture;};
 Texture2D image:register(t0);SamplerState imageSampler:register(s0);
+Texture2DArray eyeImages:register(t1);
 struct V { float4 pos:SV_POSITION;float2 uv:TEXCOORD0; };
 V vs(uint id:SV_VertexID){V o;o.uv=float2((id<<1)&2,id&2);o.pos=float4(o.uv*float2(2,-2)+float2(-1,1),0,1);return o;}
 float3 linearize(float3 c){return lerp(c/12.92,pow(max((c+.055)/1.055,0),2.4),step(.04045,c));}
@@ -65,7 +66,10 @@ float2 stereoUV=uv;stereoUV.x+=(eye==0?1:-1)*options.z;
 if(pattern==0){c=float3(.025,.03,.04);float mark=eye==0?box(uv,float2(.5,.52),float2(.15,.2)):1-step(.19,length((uv-float2(.5,.52))*float2(aspect,1)));c=lerp(c,float3(.8,.8,.8),mark);c=max(c,eyeLabel(uv,eye));}
 else if(pattern==1){c=.005;for(int row=0;row<3;row++){float y=.25+row*.27;float level=row==1?.2:1;float x=eye==0?.32:.68;float target=box(uv,float2(x,y),float2(.065,.075));float cross=box(uv,float2(.5,y),float2(.025,.003))+box(uv,float2(.5,y),float2(.002,.033));c=max(c,target*level+cross*.08);}c=max(c,eyeLabel(uv,eye));}
 else if(pattern==2){c=scene(stereoUV,eye,aspect);}
-else if(pattern==3){if(stereoUV.x<0||stereoUV.x>1){black=true;return 0;}float2 p=stereoUV;if(source.x<.5)p.x=(p.x+eye)*.5;else p.y=(p.y+eye)*.5;float2 texel=1/max(source.zw,1);p=clamp(p,source.x<.5?float2(eye*.5,0)+texel*.5:float2(0,eye*.5)+texel*.5,source.x<.5?float2((eye+1)*.5,1)-texel*.5:float2(1,(eye+1)*.5)-texel*.5);c=image.Sample(imageSampler,p).rgb;if(source.y<.5)c=linearize(c);else if(source.y>1.5){c=pq(c);c=mul(float3x3(1.6605,-.5876,-.0728,-.1246,1.1329,-.0083,-.0182,-.1006,1.1187),c);}}
+else if(pattern==3){if(stereoUV.x<0||stereoUV.x>1){black=true;return 0;}float2 p=stereoUV;float2 texel=1/max(source.zw,1);
+if(source.x>1.5){p=clamp(p,texel*.5,1-texel*.5);c=eyeImages.Sample(imageSampler,float3(p,eye)).rgb;}
+else{if(source.x<.5)p.x=(p.x+eye)*.5;else p.y=(p.y+eye)*.5;p=clamp(p,source.x<.5?float2(eye*.5,0)+texel*.5:float2(0,eye*.5)+texel*.5,source.x<.5?float2((eye+1)*.5,1)-texel*.5:float2(1,(eye+1)*.5)-texel*.5);c=image.Sample(imageSampler,p).rgb;}
+if(source.y<.5)c=linearize(c);else if(source.y>1.5){c=pq(c);c=mul(float3x3(1.6605,-.5876,-.0728,-.1246,1.1329,-.0083,-.0182,-.1006,1.1187),c);}}
 else if(pattern==5||pattern==6){if(eye!=pattern-5){black=true;return 0;}for(int row=0;row<3;row++)c=max(c,box(uv,float2(.5,.22+row*.28),float2(.22,.07)));c=max(c,eyeLabel(uv,eye));}
 else if(pattern==7||(pattern>=9&&pattern<=11)){
     // Nine rows extending to the screen edges. Three transition pairs per row:

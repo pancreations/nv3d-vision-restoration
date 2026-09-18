@@ -21,6 +21,7 @@ $deps = @(
     # Whole-screen AI depth: ONNX Runtime's DirectML build and DirectML itself, as NuGet packages (zip archives).
     @{ Name = 'ONNX Runtime 1.22.1 (DirectML build)'; Url = 'https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/1.22.1'; Target = 'onnxruntime'; Check = 'build\native\include\onnxruntime_c_api.h'; Flat = $true; File = 'Microsoft.ML.OnnxRuntime.DirectML.1.22.1.nupkg' }
     @{ Name = 'DirectML 1.15.4'; Url = 'https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/1.15.4'; Target = 'directml'; Check = 'bin\x64-win\DirectML.dll'; Flat = $true; File = 'Microsoft.AI.DirectML.1.15.4.nupkg' }
+    @{ Name = '7-Zip 26.03 portable extractor'; Url = 'https://github.com/ip7z/7zip/releases/download/26.03/7z2603-extra.7z'; Target = '7zip-26.03'; Check = 'x64\7za.exe'; Flat = $true }
 )
 # Depth network for the whole-screen conversion (weights, not code): Depth Anything V2 Small,
 # Apache-2.0, ONNX export by onnx-community. The fp32 export is onnx/model.onnx in the same repository.
@@ -44,6 +45,10 @@ try {
         if ($dep.Flat) { Move-Item $extract $target }
         else { Move-Item (Get-ChildItem $extract -Directory | Select-Object -First 1).FullName $target }
         if (-not (Test-Path (Join-Path $target $dep.Check))) { throw "$($dep.Name) did not unpack as expected." }
+    }
+    $sevenZipSource = Join-Path $root '7zip-26.03/7z2603-src.7z'
+    if ($Force -or -not (Test-Path -LiteralPath $sevenZipSource)) {
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ip7z/7zip/releases/download/26.03/7z2603-src.7z' -OutFile $sevenZipSource
     }
     $null = New-Item -ItemType Directory -Force $modelDir
     if (-not $Force -and (Test-Path $modelFile)) { Write-Host 'Present: Depth Anything V2 Small (ONNX, fp16)' }

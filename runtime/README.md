@@ -1,12 +1,11 @@
 # Geo11 game output
 
-**Withdrawn prototype; shared hooks allowed:** the user clarified that hooking
-the game is acceptable. The requirement is one reusable Geo11 integration that
-preserves the established community fix, without game-specific adjustments.
-The earlier blanket ban on in-process attachment was incorrect. Both trial
-installations remain rolled back; their manual setup deviations and unresolved
-gameplay timing still need addressing. Details below record the experiment,
-not a supported setup. See [current status](../docs/STATUS.md).
+**Shared hook, experimental:** connection v3 preserves the installed Geo11
+output mode and consumes SBS, TAB, their reversed variants, or Katanga. Both
+architectures use the same code. Earlier game trials remain rolled back; broad
+game/optical compatibility is not established. Real-renderer tests pass image
+and live-depth checks but still reproduce a Geo11 shutdown crash also seen in
+the unhooked baseline. See [current status](../docs/STATUS.md).
 
 The game and its existing Geo11 fix render stereo. Vision Restoration replaces
 the display endpoint and drives the original USB emitter. The game keeps its
@@ -15,8 +14,11 @@ window, mouse, keyboard and controller input. No external viewer is involved.
 ## Setup
 
 Build with `build.ps1`. It packages `runtime/x86` and `runtime/x64` beside the app.
-Install a Geo11-compatible fix using its established instructions, close the
-game, then use **Sources & games > Connect existing stereo fix...**. Select the
+Install a Geo11-compatible fix from the maintained
+[Geo11 releases](https://github.com/ThreeDeeJay/geo-11/releases),
+[Helix Mod](https://helixmod.blogspot.com/) or
+[3D Fix Manager](https://helixmod.blogspot.com/2017/05/3d-fix-manager.html) using its established instructions, close the
+game, then use **Games > Enable shared Geo11 hook...**. Select the
 actual rendering executable rather than a launcher. Leave the app open and
 launch the game normally. The fix controls depth, convergence and shader effects.
 
@@ -43,14 +45,14 @@ connector refuses to overwrite those changes.
 1. The connector retains the community `d3d11.dll` byte-for-byte as
    `VisionGeo11.dll`. It installs our early loader as `d3d11.dll` and our output
    adapter as `VisionStereo11.dll`. Shader files and other community DLLs remain.
-2. Only two configuration keys are changed: `d3dx.ini`'s
-   `[System] proxy_d3d11=VisionStereo11.dll` and `d3dxdm.ini`'s
-   `[Device] direct_mode=katanga_vr`.
+2. Only `d3dx.ini`'s `[System] proxy_d3d11=VisionStereo11.dll` is changed.
+   `d3dxdm.ini`, including the output mode and compatibility settings, is preserved.
 3. Before Geo11 initializes, the loader installs the output hooks on the native
    DXGI factory. Geo11 then wraps our logical swapchain. Loader callbacks from
    Geo11 reach the native backend without re-entering the renderer.
-4. Geo11 produces its documented full-resolution packed eye texture. Its shared
-   mapping is isolated per process. At logical Present, the adapter copies a
+4. The adapter reads the packed logical backbuffer for SBS/TAB, or the full-resolution
+   Katanga texture when the fix already uses that mode. The Katanga mapping is
+   isolated per process. At logical Present, the adapter copies a
    pair using the game's GPU context, in order after Geo11 rendering. It publishes
    that pair only after the GPU completion fence (or event query) confirms the
    copy finished. A successful CPU keyed-mutex acquisition alone is insufficient:
@@ -113,9 +115,10 @@ the official generic renderer. Neither game's executable was patched.
 
 - This is a reusable DX11 Geo11 backend, not whole-catalogue compatibility.
 - Original-driver-dependent NVAPI stereo, DX9/10, native DX12, Vulkan/OpenGL,
-  other stereo mods and native media-player integrations require other backends.
-- Window capture and AI desktop remain separate features. VLC SBS capture can
-  use the existing capture route; native VLC integration is not implemented.
+  other stereo mods and other media-player integrations require other backends.
+- Window capture, AI desktop and VLC movie playback are separate sources. The
+  direct VLC 3.x SBS/TAB source uses the app presenter, not the Geo11 game adapter;
+  see [VLC setup](../docs/USAGE.md#vlc-stereo-movies).
 - Fullscreen transitions, multiple simultaneous games/swapchains, unusual DXGI
   methods, D3D11On12 and HDR metadata need further compatibility tests.
 - Geo11 0.7.11 shutdown behavior was not consistently clean in standalone probes;
@@ -144,3 +147,7 @@ Configure `tools/stereo-runtime` directly to also build diagnostic targets:
 The game directory's `VisionStereo11.log` records startup, transport choice and
 periodic pacing statistics. See [compatibility architecture](../docs/STEREO-COMPATIBILITY.md)
 for future backends.
+
+## Existing Geo11 direct capture
+
+`VisionStereo11` also connects an existing geo-11 fix to the app's Direct 3D eyes input. `VisionStereoCapture.ini` with `[VISION_CAPTURE] Mode=geo11` selects this route, and the Games connector creates it automatically for detected geo-11 fixes. It uses the existing provider/proxy chain, preserves `d3dxdm.ini`, and does not require ReShade. Full-resolution Katanga eyes are copied into a two-slice shared texture after GPU completion. SBS/TAB modes retain the fix's existing resolution and eye order. The native preview stays mono while the app owns sequential display and emitter timing. See [direct capture status](../docs/DIRECT-EYES.md) and `tools/Test-Geo11Capture.ps1`.

@@ -48,7 +48,7 @@ bool sequenceValid(Sequence sequence);
 // that refresh plus its following black refreshes, never the next eye.
 double apertureWindowHz(double refresh,Sequence sequence);
 std::string sequencePattern(Sequence sequence);   // "L B B R B B"
-enum class Packing : int { SideBySide, TopBottom };
+enum class Packing : int { SideBySide, TopBottom, SeparateEyes };
 enum class Encoding : int { SRGB, LinearScRGB, PQ2020 };
 // How the panel lights its rows. A sample-and-hold panel shows every row continuously, so
 // a row carries the previous image until the scan rewrites it. A strobed panel (LightBoost,

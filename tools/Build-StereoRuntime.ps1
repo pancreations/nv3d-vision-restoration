@@ -7,11 +7,13 @@ foreach($architecture in @('x64','x86')){
     $buildDirectory=Join-Path $projectRoot "build/stereo-runtime-$architecture"
     cmake -S (Join-Path $projectRoot 'tools/stereo-runtime') -B $buildDirectory -G 'Visual Studio 17 2022' -A $platform
     if($LASTEXITCODE -ne 0){throw 'Stereo runtime configuration failed'}
-    cmake --build $buildDirectory --config $Configuration --target VisionStereo11 VisionStereoLoader -- /m:1 /verbosity:minimal
+    cmake --build $buildDirectory --config $Configuration --target VisionStereo11 VisionStereoLoader VisionStereoCapture -- /m:1 /verbosity:minimal
     if($LASTEXITCODE -ne 0){throw 'Stereo runtime build failed'}
     $target=Join-Path $Destination $architecture
     New-Item -ItemType Directory -Path $target -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $buildDirectory "$Configuration/VisionStereo11.dll") -Destination $target -Force
     Copy-Item -LiteralPath (Join-Path $buildDirectory "$Configuration/VisionStereoLoader.dll") -Destination $target -Force
+    $addon=if($architecture -eq 'x64'){'VisionStereoCapture.addon64'}else{'VisionStereoCapture.addon32'}
+    Copy-Item -LiteralPath (Join-Path $buildDirectory "$Configuration/$addon") -Destination $target -Force
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party/minhook-1.3.4/LICENSE.txt') -Destination (Join-Path $Destination 'MinHook-LICENSE.txt') -Force

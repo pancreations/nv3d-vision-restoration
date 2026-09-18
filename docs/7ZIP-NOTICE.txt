@@ -1,0 +1,11 @@
+Vision Restoration includes the unmodified x64 standalone 7-Zip 26.03
+console extractor (7za.exe), Copyright (C) 1999-2026 Igor Pavlov.
+It opens user-supplied NVIDIA packages as archives; it does not run installers.
+
+The matching complete source archive accompanies the release at
+licenses/7zip/7z2603-src.7z. License.txt and the GNU LGPL 2.1 text accompany it.
+7za.exe is licensed under the GNU LGPL; see the supplied upstream License.txt.
+
+Official project and releases:
+https://www.7-zip.org/
+https://github.com/ip7z/7zip/releases/tag/26.03

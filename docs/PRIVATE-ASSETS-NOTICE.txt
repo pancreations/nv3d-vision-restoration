@@ -1,0 +1,57 @@
+VISION RESTORATION - PRIVATE PERSONAL ASSETS
+DO NOT UPLOAD, PUBLISH, OR ATTACH THIS ARCHIVE TO A PUBLIC RELEASE.
+=================================================================
+
+This archive is a private convenience copy for the project owner. Extract it
+directly over the public Vision Restoration portable folder. It supplies:
+
+  emitter.fw
+    Prepared proprietary NVIDIA emitter firmware. It belongs beside
+    VisionRestoration.exe. Public users obtain NVIDIA's EXE download, run the
+    included Prepare NVIDIA Firmware.cmd helper, and select that EXE directly.
+    The helper extracts firmware automatically without installing NVIDIA's driver.
+
+  models\depth-anything-v2-small-fp16.onnx
+  models\depth-anything-v2-base-fp16.onnx
+  models\depth-anything-v2-large-fp16.onnx
+    Local AI depth models. Base and Large are licensed only for non-commercial
+    use. The public release does not redistribute any model weights.
+
+  private-assets\geo11-0.7.11\
+    Local upstream Geo11 x86/x64 test files. These are reference/test assets;
+    do not copy a generic d3d11.dll into the Vision Restoration app folder.
+    Install the correct architecture and game fix in the game's own directory,
+    then use the Games tab to connect Vision Restoration's included hook.
+
+Official sources if these assets must be obtained again:
+
+NVIDIA standalone 3D Vision USB controller package 390.41 (direct download)
+https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe
+This is a USB-only package, not a graphics driver. Do not run its installer.
+The Quadro server path does not mean a Quadro GPU is required to extract firmware.
+
+7-Zip (manual fallback; the public helper includes a portable extractor)
+https://www.7-zip.org/
+
+Zadig (bind the emitter's two USB identities to WinUSB)
+https://zadig.akeo.ie/
+
+Maintained Geo11 releases
+https://github.com/ThreeDeeJay/geo-11/releases
+
+Helix Mod community game fixes
+https://helixmod.blogspot.com/
+
+3D Fix Manager
+https://helixmod.blogspot.com/2017/05/3d-fix-manager.html
+
+Depth Anything V2 Small (Apache-2.0)
+https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx
+
+Depth Anything V2 Base (CC-BY-NC-4.0; non-commercial)
+https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx
+
+Depth Anything V2 Large (CC-BY-NC-4.0; non-commercial)
+https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx
+
+See Vision Restoration Quick Start.pdf for setup and safety instructions.

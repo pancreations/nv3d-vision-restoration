@@ -1,4 +1,6 @@
 #include "sources.h"
+#include "gpu_completion.h"
+#include "direct_eyes.h"
 #include <wincodec.h>
 #include <d3dkmthk.h>
 #include <dwmapi.h>
@@ -17,15 +19,21 @@ std::vector<std::pair<HWND,std::string>> captureWindows(HWND exclude){
     EnumWindows([](HWND h,LPARAM p)->BOOL{auto& r=*reinterpret_cast<std::vector<std::pair<HWND,std::string>>*>(p);if(!IsWindowVisible(h) || GetWindow(h,GW_OWNER))return TRUE;wchar_t title[512]{};GetWindowTextW(h,title,512);if(title[0])r.emplace_back(h,utf8(title));return TRUE;},reinterpret_cast<LPARAM>(&result));
     std::erase_if(result,[&](auto& w){return w.first==exclude;});return result;
 }
-void StereoSource::start(const SourceConfig& c,LUID adapter){stop();if(c.kind==SourceKind::Patterns)return;{std::lock_guard l(mutex_);status_={"Starting source...",0,0,0,true};screen_=c.screen;++screenRevision_;}thread_=std::jthread([this,c,adapter](std::stop_token s){run(s,c,adapter);});}
+void StereoSource::start(const SourceConfig& c,LUID adapter){stop();if(c.kind==SourceKind::Patterns)return;{std::lock_guard l(mutex_);status_={"Starting source...",0,0,0,true};screen_=c.screen;++screenRevision_;mediaPaused_=false;mediaSeekMs_=-1;}thread_=std::jthread([this,c,adapter](std::stop_token s){run(s,c,adapter);});}
+void StereoSource::pauseMedia(bool paused){std::lock_guard l(mutex_);mediaPaused_=paused;}
+void StereoSource::seekMedia(int64_t ms){std::lock_guard l(mutex_);mediaSeekMs_=std::max(int64_t(0),ms);}
+void StereoSource::volumeMedia(int percent){std::lock_guard l(mutex_);mediaVolume_=std::clamp(percent,0,100);}
 void StereoSource::configureScreen(const ScreenSettings& s){std::lock_guard l(mutex_);screen_=s;++screenRevision_;}
-void StereoSource::stop(){if(thread_.joinable()){thread_.request_stop();thread_.join();}std::lock_guard l(mutex_);latest_.reset();status_={};}
+void StereoSource::stop(){if(thread_.joinable()){thread_.request_stop();thread_.join();}std::lock_guard l(mutex_);latest_.reset();directQueue_.clear();status_={};}
 std::shared_ptr<StereoFrame> StereoSource::latest()const{std::lock_guard l(mutex_);return latest_;}
+std::shared_ptr<StereoFrame> StereoSource::forPresentation()const{std::lock_guard l(mutex_);return directQueue_.empty()?latest_:directQueue_.front();}
+void StereoSource::presented(const std::shared_ptr<StereoFrame>& frame){std::lock_guard l(mutex_);if(!directQueue_.empty()&&directQueue_.front()==frame)directQueue_.pop_front();}
 SourceStatus StereoSource::status()const{std::lock_guard l(mutex_);return status_;}
 void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     try{
         if(config.kind==SourceKind::Screen)config.packing=Packing::SideBySide;
+        if(config.kind==SourceKind::DirectEyes)config.packing=Packing::SeparateEyes;
         if(config.kind==SourceKind::Window||config.kind==SourceKind::Screen){
             // WGC's 8-bit path clips an HDR desktop before the presenter ever
             // receives it. Preserve scRGB for both HDR and SDR output modes.
@@ -37,32 +45,60 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
         ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;check(D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"Source D3D11 device");
         std::array<std::shared_ptr<StereoFrame>,3> pool;
         auto publish=[&](ID3D11Texture2D* input,unsigned width,unsigned height,double timestamp,Encoding encoding,unsigned left=0,unsigned top=0){
-            if(!width || !height || (config.packing==Packing::SideBySide ? width%2 : height%2))throw std::runtime_error("Packed stereo dimensions must divide evenly into two eyes.");
+            const bool separate=config.packing==Packing::SeparateEyes;
+            if(!width || !height || (!separate&&(config.packing==Packing::SideBySide ? width%2 : height%2)))throw std::runtime_error("Packed stereo dimensions must divide evenly into two eyes.");
             size_t index=3;for(size_t i=0;i<3;i++)if(!pool[i] || pool[i].use_count()==1){index=i;break;}
+            // Direct providers retain ownership and retry until space exists;
+            // never acknowledge a sequential eye pair that was not copied.
+            while(index==3&&separate&&!stop.stop_requested()){
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                for(size_t i=0;i<3;i++)if(!pool[i]||pool[i].use_count()==1){index=i;break;}
+            }
+            if(stop.stop_requested())return;
             if(index==3){std::lock_guard l(mutex_);status_.dropped++;return;}
             D3D11_TEXTURE2D_DESC in{};input->GetDesc(&in);
             auto& frame=pool[index];D3D11_TEXTURE2D_DESC old{};if(frame)frame->texture->GetDesc(&old);
             if(!frame || old.Width!=width || old.Height!=height || old.Format!=in.Format){
-                frame=std::make_shared<StereoFrame>();D3D11_TEXTURE2D_DESC d{};d.Width=width;d.Height=height;d.MipLevels=1;d.ArraySize=1;d.SampleDesc.Count=1;d.Format=in.Format;d.Usage=D3D11_USAGE_DEFAULT;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;d.MiscFlags=D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+                frame=std::make_shared<StereoFrame>();D3D11_TEXTURE2D_DESC d{};d.Width=width;d.Height=height;d.MipLevels=1;d.ArraySize=separate?2:1;d.SampleDesc.Count=1;d.Format=in.Format;d.Usage=D3D11_USAGE_DEFAULT;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;d.MiscFlags=D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
                 check(device->CreateTexture2D(&d,nullptr,&frame->texture),"Create shared source frame");ComPtr<IDXGIResource> resource;check(frame->texture.As(&resource),"Source shared resource");check(resource->GetSharedHandle(&frame->sharedHandle),"Source shared handle");
             }
-            ComPtr<IDXGIKeyedMutex> key;check(frame->texture.As(&key),"Source keyed mutex");HRESULT acquired=key->AcquireSync(0,0);if(acquired!=S_OK){std::lock_guard l(mutex_);status_.dropped++;return;}
+            ComPtr<IDXGIKeyedMutex> key;check(frame->texture.As(&key),"Source keyed mutex");HRESULT acquired=key->AcquireSync(0,0);
+            while(separate&&acquired==HRESULT(WAIT_TIMEOUT)&&!stop.stop_requested()){
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));acquired=key->AcquireSync(0,0);
+            }
+            if(acquired!=S_OK){if(stop.stop_requested())return;if(separate)throw std::runtime_error("Direct eye snapshot mutex failed; holding last complete pair");std::lock_guard l(mutex_);status_.dropped++;return;}
+            // Allocate the completion query before submitting
+            // a copy: Flush alone does not establish GPU completion.
+            D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT,0};ComPtr<ID3D11Query> done;
+            const HRESULT created=device->CreateQuery(&qd,&done);
+            if(FAILED(created)){key->ReleaseSync(0);check(created,"Create source completion query");}
             D3D11_BOX box{left,top,0,left+width,top+height,1};context->CopySubresourceRegion(frame->texture.Get(),0,0,0,0,input,0,&box);
+            if(separate)context->CopySubresourceRegion(frame->texture.Get(),1,0,0,0,input,1,&box);
             // Hand the texture over only after the GPU has finished the copy. Released while the copy was
             // still queued, the presenter's draw of this texture waited on it, and with a focused game
             // loading the GPU that wait pushed the output past its refresh: an eye repeated and the image
             // jumped every few seconds, as the game's frame rate beat against the output's pair rate.
-            {D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT,0};ComPtr<ID3D11Query> done;
-             if(SUCCEEDED(device->CreateQuery(&qd,&done))){context->End(done.Get());context->Flush();
-                 double giveUp=qpc()+.1;BOOL finished=FALSE;
-                 while(context->GetData(done.Get(),&finished,sizeof(finished),0)==S_FALSE&&qpc()<giveUp)std::this_thread::yield();}
-             else context->Flush();}
+            context->End(done.Get());context->Flush();
+            const HRESULT completed=waitForGpuCompletion([&](BOOL* finished){return context->GetData(done.Get(),finished,sizeof(*finished),0);},stop);
             check(key->ReleaseSync(0),"Release source mutex");
+            if(stop.stop_requested())return;
+            check(completed,"Source GPU copy did not complete; holding last complete pair");
             frame->width=width;frame->height=height;frame->packing=config.kind==SourceKind::Screen?Packing::SideBySide:config.packing;frame->encoding=encoding;frame->timestamp=timestamp;
             frame->alignmentApplied=config.kind==SourceKind::Screen;frame->sdrWhiteLevel=config.sdrWhiteLevel;
-            std::lock_guard l(mutex_);frame->pairId=++status_.frames;latest_=frame;status_.lastFrame=qpc();if(config.kind!=SourceKind::Screen)status_.message="Receiving complete stereo pairs"; // the screen conversion reports its own state
+            std::lock_guard l(mutex_);frame->pairId=++status_.frames;latest_=frame;if(separate)directQueue_.push_back(frame);status_.lastFrame=qpc();if(config.kind!=SourceKind::Screen)status_.message="Receiving complete stereo pairs"; // the screen conversion reports its own state
         };
-        if(config.kind==SourceKind::Image){
+        if(config.kind==SourceKind::DirectEyes){
+            direct::Reader reader;check(reader.open(device.Get(),config.directChannel),"Open direct stereo provider (the provider must be running)");
+            while(!stop.stop_requested()){
+                const HRESULT hr=reader.acquire();
+                if(hr==S_FALSE||hr==DXGI_ERROR_WAS_STILL_DRAWING){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+                check(hr,"Direct stereo provider disconnected; holding last complete pair");
+                D3D11_TEXTURE2D_DESC desc{};reader.texture()->GetDesc(&desc);
+                publish(reader.texture(),desc.Width,desc.Height,qpc(),Encoding(reader.encoding()));
+                reader.release();
+                {std::lock_guard l(mutex_);status_.message="Receiving separate full-resolution eyes";}
+            }
+        }else if(config.kind==SourceKind::Image){
             ComPtr<IWICImagingFactory> wic;check(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wic)),"WIC factory");
             ComPtr<IWICBitmapDecoder> decoder;check(wic->CreateDecoderFromFilename(config.file.c_str(),nullptr,GENERIC_READ,WICDecodeMetadataCacheOnLoad,&decoder),"Open stereo image");
             ComPtr<IWICBitmapFrameDecode> frame;check(decoder->GetFrame(0,&frame),"Image frame");ComPtr<IWICFormatConverter> converter;check(wic->CreateFormatConverter(&converter),"Image converter");
@@ -112,6 +148,8 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
                 if(config.packing==Packing::SideBySide)cropWidth&=~1u;else cropHeight&=~1u;
                 publish(texture.Get(),cropWidth,cropHeight,double(frame.SystemRelativeTime().count())/10000000.0,config.captureHDR?Encoding::LinearScRGB:Encoding::SRGB,cropLeft,cropTop);frame.Close();
             }session.Close();frames.Close();
+        }else if(config.kind==SourceKind::Vlc){
+            runVlc(stop,config,device.Get(),context.Get(),publish);
         }else if(config.kind==SourceKind::Screen){
             runScreen(stop,config,adapterId,device.Get(),context.Get(),[&](ID3D11Texture2D* t,unsigned w,unsigned h,double ts,Encoding e,unsigned l,unsigned top){publish(t,w,h,ts,e,l,top);});
         }

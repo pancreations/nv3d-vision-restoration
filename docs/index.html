@@ -96,6 +96,7 @@
   </div>
 </header>
 
+<div class="wrap status"><p><strong>v0.1.0 experimental prerelease:</strong> <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.1.0">Download the portable ZIP and updated README PDF</a>.</p><p>Prepare game is available in the left Input/Games tab. Resident Evil 2 and Metal Gear Solid V still have unresolved failures and are not supported games. Classic NVIDIA stereo rendering is not supplied by this app.</p></div>
 <section id="status">
   <h2>What works today</h2>
   <h3>3D sources</h3>
@@ -106,6 +107,7 @@
       <tbody>
         <tr><td>Window capture of a game rendering side-by-side 3D (proven with Dolphin set to side-by-side)</td><td><span class="pill ok">Working</span></td></tr>
         <tr><td>Window capture of any side-by-side 3D video</td><td><span class="pill ok">Working</span></td></tr>
+        <tr><td><a href="USAGE.html#vlc-stereo-movies">Direct VLC 3.x stereo movie playback (SBS or top/bottom)</a></td><td><span class="pill">SDR decoding tested; optical validation pending</span></td></tr>
         <tr><td>ReShade capture: a ReShade add-on sends the game's side-by-side frames to the app over Spout</td><td><span class="pill ok">Working</span></td></tr>
         <tr><td>In-game hook</td><td><span class="pill bad">Broken, never worked</span></td></tr>
         <tr><td>geo-11</td><td><span class="pill">Untested</span></td></tr>
@@ -173,8 +175,8 @@ cd nv3d-vision-restoration-project
       <h3>Get the emitter firmware</h3>
       <p>The emitter has no permanent firmware. The PC uploads it every time it's plugged in, and that firmware lives inside NVIDIA's driver file <code>nvstusb.sys</code>.</p>
       <ul>
-        <li>Download NVIDIA's <a href="https://www.nvidia.com/en-us/drivers/nv3dvisionusb/390_41/nv3dvisionusb-driver/">3D Vision USB driver 390.41</a> (a GeForce package up to 425.31 also works).</li>
-        <li class="warn"><strong>Don't run the installer.</strong> Open the package with <a href="https://www.7-zip.org/">7-Zip</a> and copy <code>nvstusb.sys</code> out of the <code>NV3DVisionUSB.Driver</code> folder.</li>
+        <li><a href="https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe">Download NVIDIA's standalone 3D Vision USB controller package 390.41 directly</a>. This is not a graphics driver; no Quadro GPU is needed to extract the firmware.</li>
+        <li class="warn"><strong>Don't run NVIDIA's installer.</strong> In the portable release, run <code>Prepare NVIDIA Firmware.cmd</code> and select the downloaded EXE. Its included extractor prepares <code>emitter.fw</code> automatically. Source builders can extract <code>nvstusb*.sys</code> from <code>NV3DVisionUSB.Driver</code> with <a href="https://www.7-zip.org/">7-Zip</a> and use the command below.</li>
       </ul>
 <pre><code>.\build\bin\Release\vision_firmware.exe C:\path\to\nvstusb.sys .\build\bin\Release\emitter.fw</code></pre>
     </li>
