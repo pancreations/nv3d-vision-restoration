@@ -234,7 +234,7 @@ if (-not $SkipSmoke) {
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($coreStage, $coreZip, [IO.Compression.CompressionLevel]::Optimal, $false)
 
-$archiveHashes = @($coreZip, $readmePdfPath, $pdfPath) | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant(), (Split-Path -Leaf $_) }
+$archiveHashes = @($coreZip, $readmePdfPath, $pdfPath) | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant(), ((Split-Path -Leaf $_).Replace(' ', '.')) }
 [IO.File]::WriteAllLines((Join-Path $distRoot 'SHA256SUMS.txt'), $archiveHashes, [Text.UTF8Encoding]::new($false))
 
 Remove-WithRetry $coreStage
