@@ -12,6 +12,16 @@ namespace vision {
 uint64_t refreshForPresent(uint32_t present,uint32_t observedPresent,uint64_t observedRefresh) {
     return observedRefresh+uint32_t(present-observedPresent);
 }
+void PresentRefreshAnchor::observe(uint32_t id,uint64_t displayedRefresh,bool composed){
+    if(valid&&id==present)return;
+    if(!valid||!composed){present=id;refresh=displayedRefresh;valid=true;confirmations=0;return;}
+    const uint64_t predicted=refreshForPresent(id,present,refresh);
+    const int64_t correction=int64_t(displayedRefresh)-int64_t(predicted);
+    present=id;refresh=predicted;
+    if(correction==0){confirmations=0;return;}
+    if(correction!=candidate){candidate=correction;confirmations=1;return;}
+    if(++confirmations>=2){refresh=displayedRefresh;confirmations=0;}
+}
 uint32_t presentForRefresh(uint64_t refresh,uint32_t observedPresent,uint64_t observedRefresh) {
     return observedPresent+uint32_t(refresh-observedRefresh);
 }
@@ -336,6 +346,7 @@ void validate(const Settings& s) {
     if(!std::isfinite(s.screen.smoothing) || s.screen.smoothing < 0 || s.screen.smoothing > .99f) throw std::runtime_error("Screen depth smoothing must be between 0 and 0.99.");
     if(s.screen.quality < 14 || s.screen.quality > 1036) throw std::runtime_error("Screen network input must be between 14 and 1036 pixels.");
     if(s.screen.steps < 4 || s.screen.steps > 64) throw std::runtime_error("Screen search steps must be between 4 and 64.");
+    if(!std::isfinite(s.screen.depthRate) || s.screen.depthRate < 5 || s.screen.depthRate > 60) throw std::runtime_error("Screen depth update limit must be between 5 and 60 per second.");
     if(!std::isfinite(s.bandCenter) || s.bandCenter < s.bandHeight/2-1e-4f || s.bandCenter > 1-s.bandHeight/2+1e-4f) throw std::runtime_error("Stereo area must stay inside the output.");
     if(!std::isfinite(s.panelResponseUs) || s.panelResponseUs < 0 || s.panelResponseUs > 8000) throw std::runtime_error("Panel response must be between 0 and 8000 us.");
     if(!std::isfinite(s.panelScanUs) || s.panelScanUs < 0 || s.panelScanUs > 50000) throw std::runtime_error("Panel scan time must be between 0 and 50000 us.");
@@ -408,6 +419,7 @@ void saveProfile(const std::filesystem::path& path, const Settings& s) {
     }
     f << "screen_separation " << s.screen.separation << "\nscreen_convergence " << s.screen.convergence << "\nscreen_popout " << s.screen.popOut << "\nscreen_smoothing " << s.screen.smoothing << "\nscreen_quality " << s.screen.quality << "\nscreen_steps " << s.screen.steps << '\n';
     str("screen_model",s.screen.model);
+    f << "screen_depth_rate " << s.screen.depthRate << '\n';
     f.close(); if(!f) throw std::runtime_error("Profile write failed.");
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("Cannot replace profile; previous profile retained.");
@@ -475,6 +487,7 @@ Settings loadProfile(const std::filesystem::path& path) {
         else if(key=="screen_quality") f>>s.screen.quality;
         else if(key=="screen_steps") f>>s.screen.steps;
         else if(key=="screen_model") f>>std::quoted(s.screen.model);
+        else if(key=="screen_depth_rate") f>>s.screen.depthRate;
         else throw std::runtime_error("Unknown profile field: "+key);
         if(!f)throw std::runtime_error("Malformed profile field: "+key);
     }

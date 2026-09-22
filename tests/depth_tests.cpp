@@ -45,13 +45,16 @@ int main(){try{
      norm.reset();require(norm.frames()==0,"Reset clears the history");}
     // Screen settings live in the profile.
     {Settings s;s.screen.separation=.031f;s.screen.convergence=.77f;s.screen.popOut=.25f;s.screen.smoothing=.6f;s.screen.quality=700;s.screen.steps=16;s.screen.depth=false;s.screen.model="D:\\models\\depth anything large.onnx";
+     s.screen.depthRate=60;
      auto file=std::filesystem::temp_directory_path()/"vision-screen-settings-test.ini";saveProfile(file,s);auto l=loadProfile(file);std::filesystem::remove(file);
+     require(l.screen.depthRate==60,"The responsive depth rate survives a restart/profile reload");
      require(std::abs(l.screen.separation-.031f)<1e-6f&&std::abs(l.screen.convergence-.77f)<1e-6f&&std::abs(l.screen.popOut-.25f)<1e-6f&&std::abs(l.screen.smoothing-.6f)<1e-6f&&l.screen.quality==700&&l.screen.steps==16,"Screen conversion settings round-trip through the profile");
      require(l.screen.model==s.screen.model,"The chosen depth model, spaces included, round-trips through the profile");
      Settings none;saveProfile(file,none);require(loadProfile(file).screen.model.empty(),"No chosen model stays empty");std::filesystem::remove(file);
      require(l.screen.depth&&!l.screen.showDepth,"2D and depth-view toggles are session state, not profile state");
      Settings bad;bad.screen.separation=.5f;bool threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"Separation beyond 10% of the width is rejected");
      bad=Settings{};bad.screen.quality=5000;threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"A network input larger than the channel is rejected");
-     bad=Settings{};bad.screen.convergence=NAN;threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"A non-finite screen plane is rejected");}
+     bad=Settings{};bad.screen.convergence=NAN;threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"A non-finite screen plane is rejected");
+     for(double rate:{0.,61.,double(NAN)}){bad=Settings{};bad.screen.depthRate=rate;threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"Invalid saved depth rates are rejected");}}
     std::cout<<"PASS: "<<checks<<" screen depth checks\n";return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}

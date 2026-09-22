@@ -51,7 +51,7 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
             // Direct providers retain ownership and retry until space exists;
             // never acknowledge a sequential eye pair that was not copied.
             while(index==3&&separate&&!stop.stop_requested()){
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                shortWait();
                 for(size_t i=0;i<3;i++)if(!pool[i]||pool[i].use_count()==1){index=i;break;}
             }
             if(stop.stop_requested())return;
@@ -64,7 +64,7 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
             }
             ComPtr<IDXGIKeyedMutex> key;check(frame->texture.As(&key),"Source keyed mutex");HRESULT acquired=key->AcquireSync(0,0);
             while(separate&&acquired==HRESULT(WAIT_TIMEOUT)&&!stop.stop_requested()){
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));acquired=key->AcquireSync(0,0);
+                shortWait();acquired=key->AcquireSync(0,0);
             }
             if(acquired!=S_OK){if(stop.stop_requested())return;if(separate)throw std::runtime_error("Direct eye snapshot mutex failed; holding last complete pair");std::lock_guard l(mutex_);status_.dropped++;return;}
             // Allocate the completion query before submitting
@@ -90,8 +90,11 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
         if(config.kind==SourceKind::DirectEyes){
             direct::Reader reader;check(reader.open(device.Get(),config.directChannel),"Open direct stereo provider (the provider must be running)");
             while(!stop.stop_requested()){
+                reader.announce(directCovering_,directPairPeriodUs_);
                 const HRESULT hr=reader.acquire();
-                if(hr==S_FALSE||hr==DXGI_ERROR_WAS_STILL_DRAWING){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+                // Not a 1 ms sleep: that lasts a 15.6 ms tick without a raised timer resolution, which
+                // held back the provider's next pair (and the game's frame rate) by the same amount.
+                if(hr==S_FALSE||hr==DXGI_ERROR_WAS_STILL_DRAWING){shortWait();continue;}
                 check(hr,"Direct stereo provider disconnected; holding last complete pair");
                 D3D11_TEXTURE2D_DESC desc{};reader.texture()->GetDesc(&desc);
                 publish(reader.texture(),desc.Width,desc.Height,qpc(),Encoding(reader.encoding()));
@@ -130,7 +133,7 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
             auto frames=cap::Direct3D11CaptureFramePool::CreateFreeThreaded(rtDevice,format,3,size);auto session=frames.CreateCaptureSession(item);session.IsCursorCaptureEnabled(false);session.StartCapture();
             while(!stop.stop_requested()){
                 if(!IsWindow(config.window)){std::lock_guard l(mutex_);status_.message="Source window closed; holding last complete pair";status_.running=false;break;}
-                auto frame=frames.TryGetNextFrame();if(!frame){std::this_thread::sleep_for(std::chrono::milliseconds(2));continue;}
+                auto frame=frames.TryGetNextFrame();if(!frame){shortWait();continue;}
                 // Drain to the most recent complete packed pair.
                 while(auto newer=frames.TryGetNextFrame()){frame.Close();frame=newer;}
                 auto content=frame.ContentSize();

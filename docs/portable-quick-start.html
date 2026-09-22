@@ -11,7 +11,7 @@
   html { font-family: "Segoe UI", Arial, sans-serif; color:var(--ink); font-size:10.3pt; line-height:1.36; }
   body { margin:0; }
   h1 { font-size:28pt; line-height:1.05; margin:0 0 5pt; letter-spacing:-.5pt; }
-  h2 { font-size:17pt; margin:19pt 0 7pt; padding-bottom:3pt; border-bottom:1.5pt solid var(--line); }
+  h2 { font-size:17pt; margin:14pt 0 7pt; padding-bottom:3pt; border-bottom:1.5pt solid var(--line); }
   h3 { font-size:12.5pt; margin:12pt 0 4pt; }
   p { margin:4pt 0 7pt; }
   ul, ol { margin:5pt 0 9pt 20pt; padding:0; }
@@ -32,14 +32,14 @@
   .steps > li::before { content:counter(step); position:absolute; left:0; top:-1pt; width:19pt; height:19pt; border-radius:50%; background:#76b900; color:#10180b; font-weight:800; text-align:center; line-height:19pt; }
   .page { break-before:page; }
   .small { color:var(--muted); font-size:8.8pt; }
-  .footer-note { margin-top:16pt; padding-top:6pt; border-top:1pt solid var(--line); color:var(--muted); font-size:8.7pt; }
+  .footer-note { margin-top:10pt; padding-top:6pt; border-top:1pt solid var(--line); color:var(--muted); font-size:8.7pt; }
 </style>
 </head>
 <body>
   <div class="mast">
     <div class="badge">PORTABLE WINDOWS RELEASE</div>
     <h1>Vision Restoration</h1>
-    <div class="sub">Quick Start · Version 0.1.0</div>
+    <div class="sub">Quick Start · Version 0.1.1</div>
   </div>
 
   <div class="box warn">
@@ -132,8 +132,9 @@
     <li>Download <a href="https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx">Depth Anything V2 Small</a>, <a href="https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx">Base</a>, or <a href="https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx">Large</a> from ONNX Community.</li>
     <li>Save each download in the included <code>models</code> folder with a distinct name, such as <code>depth-anything-v2-small-fp16.onnx</code>.</li>
     <li>Restart the app and choose <strong>AI desktop</strong>. Small is fastest; Base and Large are slower and licensed for non-commercial use.</li>
+    <li>Use <strong>Responsive desktop</strong> for Small at 518 px with a 60 updates/s depth limit. Check <strong>Actual depth</strong> for measured updates and map age; desktop motion and depth updates run independently.</li>
   </ol>
-  <p>AI depth is unrelated to normal stereo images, window capture, game integration, or emitter control.</p>
+  <p><strong>Start screen 3D</strong> and <strong>Fullscreen / F11</strong> keep desktop mouse and keyboard input available through the overlay. AI depth is unrelated to normal stereo images, window capture, game integration, or emitter control.</p>
 
   <div class="page"></div>
   <div class="mast"><h1>Troubleshooting</h1><div class="sub">Useful checks before filing a report</div></div>

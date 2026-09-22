@@ -69,7 +69,7 @@ struct ScreenSettings {
     unsigned steps=24;       // reprojection search steps per pixel
     std::string model;       // depth model file (UTF-8 path); empty = the Depth Anything V2 Small in models/
     double pairRate=120;     // most stereo pairs per second worth drawing (session state)
-    double depthRate=30;     // most pictures per second sent to the network (session state)
+    double depthRate=30;     // most pictures per second sent to the network (saved preference)
     bool depth=true;         // false: both eyes get the picture unchanged (session state)
     bool showDepth=false;    // diagnostic: the nearness map instead of the picture (session state)
 };
@@ -148,6 +148,14 @@ unsigned cycleLength(Sequence sequence);
 Slot sequenceSlot(Sequence sequence, uint64_t index, bool swap);
 // DXGI reports the actual display refresh, including composed presentation.
 uint64_t refreshForPresent(uint32_t present, uint32_t observedPresent, uint64_t observedRefresh);
+// Only composed statistics need the two-report filter for DWM's one-refresh
+// wobble. Direct flip must follow each observed slip, even during a burst.
+struct PresentRefreshAnchor {
+    uint32_t present=0;uint64_t refresh=0;bool valid=false;
+    unsigned confirmations=0;int64_t candidate=0;
+    void reset(){*this={};}
+    void observe(uint32_t id,uint64_t displayedRefresh,bool composed);
+};
 uint32_t presentForRefresh(uint64_t refresh, uint32_t observedPresent, uint64_t observedRefresh);
 double periodUs(double refresh);
 double phaseCycleUs(double refresh, Sequence sequence);

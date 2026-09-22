@@ -20,6 +20,7 @@ public:
 struct RenderStatus {
     bool running=false,preview=true,locked=false,timingPassed=false;std::string message="Output stopped";
     uint64_t presents=0,misses=0,resyncs=0,sourcePair=0;double elapsed=0,measuredHz=0,lastResyncSec=-1;
+    uint64_t blackOnImage=0,clockReacquires=0;
     double lastIntervalMs=0,maxIntervalMs=0;std::vector<double> intervals;unsigned leadBins[6]{};bool composed=false;uint64_t modeChanges=0; // trigger lead time ms: <0, 0-2, 2-4, 4-6, 6-8, >8
     // Frame jitter: scatter of the display's vblank timestamps around the fitted refresh clock,
     // and the standard deviation of the presenter's own present-to-present interval.

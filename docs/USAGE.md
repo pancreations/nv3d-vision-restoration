@@ -146,12 +146,28 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
   PageDown** change the depth strength, **Ctrl+Alt+Home / End** move the screen plane, and
   **Ctrl+Alt+Insert** switches between 2D and 3D while the overlay is up. The controls under
   **Sources & games** stay clickable through the overlay.
-- **Start source** alone feeds the conversion to the 3D preview and the fullscreen output instead.
+- **Start source** alone feeds the conversion to the 3D preview. **Fullscreen / F11**
+  uses the same click-through desktop overlay as **Start screen 3D**, including after
+  returning from the windowed preview or selecting AI desktop in the fullscreen menu.
+  **Home** opens the controls; hide them again to use the desktop underneath.
+- For **60 stereo frames per second**, use **240 Hz with Left / Black / Right / Black**
+  or **120 Hz with Left / Right**. Desktop conversion follows that stereo frame rate;
+  AI depth updates run independently and can be slower without limiting desktop motion
+  to the depth update rate. Actual performance depends on GPU load and capture delivery.
+- **Responsive desktop** selects Depth Anything V2 Small, a 518 px input, low temporal
+  smoothing and a saved limit of 60 depth updates/s. **Actual depth** reports measured
+  updates/s and map age separately from inference time and desktop frame rate. The
+  depth helper reserves GPU time for stereo output, so Large at Fine resolution can
+  update only a few times per second even while desktop rendering stays at 60 fps.
+  Start with the responsive preset for desktop interaction; higher detail needs a
+  measured comparison of depth update rate and latency. Unchanged content needs no
+  new depth maps. `tools/Test-AiDesktopMotion.ps1 -Live` measures both rates in a
+  running AI desktop session with temporary animated patches.
 - **Depth strength** is the parallax at infinity as a share of the screen width (2 % default).
   **Screen plane** is the nearness that sits on the screen: 1 keeps everything behind the glass,
   lower values bring the nearest content out, limited by **Pop-out limit**. **Depth smoothing**
   averages the network's depth over time. **Network input** trades speed for detail (518 px is
-  about 5 ms per depth map on an RTX 5070 Ti; the map is refreshed up to 30 times a second and the
+  about 5 ms per depth map with Small on an RTX 5070 Ti; the map can refresh up to 60 times a second and the
   eyes are redrawn for every new desktop frame). **Show depth map** shows what the network sees:
   brighter is nearer, mid grey is the screen plane.
 - The depth map is a few hundred pixels across and sampled bilinearly, so depth edges are soft

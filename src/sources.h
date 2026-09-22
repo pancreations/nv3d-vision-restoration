@@ -1,6 +1,7 @@
 #pragma once
 #include "core.h"
 #include "platform.h"
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -18,7 +19,7 @@ struct StereoFrame {
 struct SourceStatus { std::string message="Built-in calibration patterns";uint64_t frames=0,dropped=0;double lastFrame=0;bool running=false;
     // Whole-screen conversion: network input size, last inference time, age of the depth in use, time
     // to draw both eyes, depth maps received, and the helper's own message (model, device or error).
-    unsigned netWidth=0,netHeight=0;double depthMs=0,depthAgeMs=0,convertMs=0;uint64_t depthFrames=0;std::string depthMessage;
+    unsigned netWidth=0,netHeight=0;double depthMs=0,depthAgeMs=0,convertMs=0,depthFps=0;uint64_t depthFrames=0;std::string depthMessage;
     int64_t mediaTimeMs=0,mediaLengthMs=0;bool mediaPaused=false,mediaSeekable=false; };
 enum class SourceKind { Patterns, Image, Window, Screen, Vlc, DirectEyes };
 struct SourceConfig { SourceKind kind=SourceKind::Patterns;std::filesystem::path file;HWND window=nullptr;Packing packing=Packing::SideBySide;Encoding encoding=Encoding::SRGB;bool captureHDR=true;float sdrWhiteLevel=1;
@@ -30,6 +31,7 @@ class StereoSource {
     mutable std::mutex mutex_;std::shared_ptr<StereoFrame> latest_;SourceStatus status_;std::jthread thread_;ScreenSettings screen_;uint64_t screenRevision_=0;
     bool mediaPaused_=false;int mediaVolume_=100;int64_t mediaSeekMs_=-1;
     std::deque<std::shared_ptr<StereoFrame>> directQueue_;
+    std::atomic<bool> directCovering_{false};std::atomic<uint32_t> directPairPeriodUs_{0};
 public:
     ~StereoSource(){stop();}
     void start(const SourceConfig& config,LUID adapter);
@@ -42,6 +44,9 @@ public:
     void pauseMedia(bool paused);
     void seekMedia(int64_t milliseconds);
     void volumeMedia(int percent);
+    // Game stereo: tells the provider that the app's output lies over the game window (the game then
+    // stops presenting underneath it) and how often the output can show a new pair.
+    void announceDirect(bool covering,uint32_t pairPeriodUs){directCovering_=covering;directPairPeriodUs_=pairPeriodUs;}
 private:
     using Publish=std::function<void(ID3D11Texture2D*,unsigned,unsigned,double,Encoding,unsigned,unsigned)>;
     void run(std::stop_token stop,SourceConfig config,LUID adapter);

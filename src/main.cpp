@@ -166,9 +166,11 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             StereoSource source;SourceConfig c;c.kind=SourceKind::Screen;c.monitor=d.monitor;c.depthHelper=executableDirectory()/L"VisionDepth.exe";c.depthModel=findDepthModel();c.depthLog=workspace()/L"reports"/L"depth-helper.log";c.screen.pairRate=60;
             f<<"Display: "<<d.name<<" "<<d.width<<'x'<<d.height<<" @ "<<d.refresh<<" Hz\nHelper: "<<utf8(c.depthHelper.wstring())<<"\nModel: "<<utf8(c.depthModel.wstring())<<"\n";
             source.start(c,d.adapterLuid);
-            const double until=qpc()+screenTestSeconds;while(qpc()<until)Sleep(50);
+            const double started=qpc(),until=started+screenTestSeconds;double sampleStart=0;uint64_t sampleFrames=0;
+            while(qpc()<until){Sleep(50);if(!sampleStart&&qpc()-started>=std::min(3.,screenTestSeconds/2.)){sampleStart=qpc();sampleFrames=source.status().frames;}}
             auto st=source.status();auto frame=source.latest();
             f<<std::fixed<<std::setprecision(1)<<"Frames: "<<st.frames<<" (dropped "<<st.dropped<<")\nDepth maps: "<<st.depthFrames<<", network "<<st.netWidth<<'x'<<st.netHeight<<", inference "<<st.depthMs<<" ms, age "<<st.depthAgeMs<<" ms\nConversion: "<<st.convertMs<<" ms per pair\nStatus: "<<st.message<<"\nHelper: "<<st.depthMessage<<"\n";
+            if(sampleStart)f<<"Steady capture/conversion: "<<(st.frames-sampleFrames)/(qpc()-sampleStart)<<" pairs/s (target "<<c.screen.pairRate<<"; requires changing desktop content)\n";
             if(frame){D3D11_TEXTURE2D_DESC format{};frame->texture->GetDesc(&format);f<<"Capture format: "<<int(format.Format)<<"; encoding "<<int(frame->encoding)<<"; SDR white "<<frame->sdrWhiteLevel*80<<" nits; packing "<<int(frame->packing)<<"; alignment applied "<<frame->alignmentApplied<<"\n";
                 if(format.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT||frame->encoding!=Encoding::LinearScRGB||frame->packing!=Packing::SideBySide||!frame->alignmentApplied)throw std::runtime_error("AI capture lost HDR precision or stereo metadata");
                 saveSharedFramePng(*frame,d.adapterLuid,workspace()/L"reports/screen-sbs.png");f<<"Saved reports/screen-sbs.png ("<<frame->width<<'x'<<frame->height<<")\n";}
@@ -331,7 +333,21 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(valid&&emitter.status().scheduled)try{lcdDeviceConfig(settings.lcd,periodUs(hz),settings.signalScanUs,1+sequenceBlack(settings.sequence),sequenceHold(settings.sequence)+sequenceBlack(settings.sequence));}catch(const rp2040::InvalidTiming& e){valid=false;lcdUi.message=e.what();}
             if(valid){lastAppliedLcd=settings.lcd;lastAppliedSequence=settings.sequence;lastAppliedRefresh=settings.refresh;}
             else notice="Pending timing edits. Glasses continue with the last valid aperture.";
-        }settings.validated=false;refreshLeakProfile();auto active=outputSettings();validate(active);{auto presented=active;if(screenOutput)presented.convergence=0;presenter.configure(presented,pattern());}
+        }settings.validated=false;refreshLeakProfile();auto active=outputSettings();validate(active);
+            // Selecting AI desktop from an already-open fullscreen menu must also
+            // release mouse input, without restarting the presenter or its timing.
+            if(sourceKind==3&&fullscreenMode&&!outputEmbedded&&!screenOutput&&outputWindow){
+                SetLastError(0);
+                const auto inputStyle=GetWindowLongPtrW(outputWindow,GWL_EXSTYLE)|WS_EX_NOACTIVATE|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW;
+                const bool styled=SetWindowLongPtrW(outputWindow,GWL_EXSTYLE,inputStyle)!=0||GetLastError()==0;
+                const auto& rect=displays[displayIndex].rect;
+                if(!styled||!SetLayeredWindowAttributes(outputWindow,0,255,LWA_ALPHA)||
+                   !SetWindowPos(outputWindow,HWND_TOPMOST,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_FRAMECHANGED)){
+                    stopOutput();throw std::runtime_error("Could not enable desktop input on the fullscreen output.");
+                }
+                screenOutput=outputPassThrough=true;outputGame=nullptr;
+            }
+            {auto presented=active;if(screenOutput)presented.convergence=0;presenter.configure(presented,pattern());}
             // The screen conversion draws at most one pair per pair the sequence shows; its image settings apply live.
             {ScreenSettings sc=settings.screen;sc.pairRate=settings.refresh/cycleLength(settings.sequence);sourceConfig.screen=sc;source.configureScreen(sc);}
             gameSync.configure(outputSettings(),displays.empty()?nullptr:displays[displayIndex].monitor);
@@ -360,7 +376,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             settings.imageGain=l.imageGain;settings.blackFloor=l.blackFloor;
             settings.hdr=l.hdr&&!displays.empty()&&displays[displayIndex].hdrEnabled;
             settings.bandHeight=l.bandHeight;settings.bandCenter=l.bandCenter;settings.panelResponseUs=l.panelResponseUs;settings.panelScanUs=l.panelScanUs;settings.illumination=l.illumination;settings.strobeStartUs=l.strobeStartUs;settings.strobeLengthUs=l.strobeLengthUs;settings.scanStartUs=l.scanStartUs;
-            settings.screen.separation=l.screen.separation;settings.screen.convergence=l.screen.convergence;settings.screen.popOut=l.screen.popOut;settings.screen.smoothing=l.screen.smoothing;settings.screen.quality=l.screen.quality;settings.screen.steps=l.screen.steps;settings.screen.model=l.screen.model;
+            settings.screen.separation=l.screen.separation;settings.screen.convergence=l.screen.convergence;settings.screen.popOut=l.screen.popOut;settings.screen.smoothing=l.screen.smoothing;settings.screen.quality=l.screen.quality;settings.screen.steps=l.screen.steps;settings.screen.model=l.screen.model;settings.screen.depthRate=l.screen.depthRate;
             strncpy_s(name,settings.name.c_str(),_TRUNCATE);strncpy_s(notes,settings.monitorNotes.c_str(),_TRUNCATE);update();notice=same?"Profile applied: "+l.name:"Profile applied: "+l.name+" (saved for a different display or mode; verify the timing).";};
         auto profileFileFor=[&](std::string n){std::string clean;for(char c:n)clean+=(isalnum((unsigned char)c)||c==' '||c=='-'||c=='_'||c=='.')?c:'_';while(!clean.empty()&&clean.back()==' ')clean.pop_back();if(clean.empty())clean="profile";return workspace()/L"profiles"/(wide(clean)+L".ini");};
         auto resetTiming=[&]{Settings d;settings.swapEyes=d.swapEyes;settings.phaseUs=d.phaseUs;settings.leftUs=d.leftUs;settings.rightUs=d.rightUs;settings.rightOffsetUs=d.rightOffsetUs;settings.sequence=d.sequence;update();notice="Timing reset: phase 0, shutters 1500 us, eyes normal.";};
@@ -372,6 +388,10 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         auto startOutput=[&](bool sideBySide=false,bool embedded=false,const RECT* overlay=nullptr,bool screen=false,bool fullscreen=false){
             if(displays.empty())throw std::runtime_error("No output found.");
             auto active=outputSettings();validate(active);auto& d=displays[displayIndex];
+            // F11 and the fullscreen button must preserve desktop input too, including
+            // after returning from the embedded preview. Only the windowed inspector
+            // and embedded preview are interactive app windows for a screen source.
+            screen=screen||(sourceKind==3&&!embedded&&(!sideBySide||fullscreen));
             // The whole-screen conversion lies over the output display and passes input through.
             if(screen)overlay=&d.rect;
             if(!sideBySide){
@@ -409,7 +429,8 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             DWORD exStyle=(sideBySide&&!fullscreen)||embedded?0:WS_EX_TOPMOST|(overlay?WS_EX_NOACTIVATE|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW:0);
             outputWindow=CreateWindowExW(exStyle,L"VisionRestorationOutput",sideBySide?L"Inspect eye images | 2D side by side":L"Stereo output",embedded?WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS:sideBySide&&!fullscreen?WS_OVERLAPPEDWINDOW:WS_POPUP,x,y,width,height,embedded?controlWindow:nullptr,nullptr,instance,nullptr);
             if(!outputWindow)throw std::runtime_error("Could not create the output window.");
-            outputPassThrough=overlay!=nullptr;if(overlay)SetLayeredWindowAttributes(outputWindow,0,255,LWA_ALPHA);
+            outputPassThrough=overlay!=nullptr;
+            if(overlay&&!SetLayeredWindowAttributes(outputWindow,0,255,LWA_ALPHA)){stopOutput();throw std::runtime_error("Could not enable the click-through output overlay.");}
             try{updateCaptureExclusion();}catch(...){stopOutput();throw;}
             screenOutput=screen;
             // A single owner controls the emitter while either app output is open.
@@ -418,11 +439,12 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             Settings presented=active;if(screen)presented.convergence=0;
             try{presenter.start(outputWindow,d,presented,sideBySide,pattern());}catch(...){stopOutput();throw;}
             if(overlay)ShowWindow(outputWindow,SW_SHOWNOACTIVATE);else{ShowWindow(outputWindow,SW_SHOW);if(!embedded)SetForegroundWindow(outputWindow);}
-            fullscreenMode=!embedded&&(fullscreen||screen||(!sideBySide&&!overlay));
+            // The game overlay gets the floating menu and global keys too; without them nothing could be
+            // tuned while playing. Its smoke test uses the control window itself as the "game".
+            fullscreenMode=!embedded&&(fullscreen||screen||(!sideBySide&&!(overlay&&smoke)));
             if(fullscreenMode){controlMenu.enterFullscreen(d.rect);keyBindings.activate(!smoke);}
             notice=screen?"The whole display is on the glasses in 3D; mouse and keys go through to the desktop. Ctrl+Alt+F8 stops. Ctrl+Alt+PageUp/PageDown: depth strength, Ctrl+Alt+Home/End: screen plane, Ctrl+Alt+Insert: 2D/3D.":embedded?"Live 3D preview: adjust phase, shutter and convergence while watching through the glasses.":sideBySide?"2D inspection of the separate eye images.":"Fullscreen stereo. Escape returns to the controls.";
         };
-        auto startFullscreenOutput=[&]{const auto current=presenter.status();startOutput(smoke||(current.running&&current.preview),false,nullptr,false,true);};
         auto startGameOutput=[&]{
             const HWND game=sourceConfig.window;
             if(sourceKind!=5||!IsWindow(game))throw std::runtime_error("Select a running game's stereo provider first.");
@@ -436,10 +458,23 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(started)source.start(sourceConfig,displays[displayIndex].adapterLuid);
             try{startOutput(false,false,&rect);outputGame=game;SetForegroundWindow(game);}
             catch(...){if(started)source.stop();throw;}
-            notice="Game stereo is active. Mouse, keyboard and controller focus stay with the game. Use the tray icon to reopen controls.";
+            notice="Game stereo is active. Mouse, keyboard and controller focus stay with the game. Home shows or hides the controls; Ctrl+Alt+arrows tune phase and shutter, Ctrl+Alt+X swaps eyes.";
+        };
+        // Plain fullscreen takes the foreground, and the game under it then loses keyboard, mouse and pad.
+        // With a game as the source on this display, present over it click-through and leave it focused.
+        auto startFullscreenOutput=[&]{
+            const auto current=presenter.status();const HWND game=sourceConfig.window;
+            if(!smoke&&sourceKind==5&&!(current.running&&current.preview)&&IsWindow(game)&&!IsIconic(game)&&!displays.empty()&&MonitorFromWindow(game,MONITOR_DEFAULTTONEAREST)==displays[displayIndex].monitor){startGameOutput();return;}
+            startOutput(smoke||(current.running&&current.preview),false,nullptr,false,true);
         };
         auto toggleFullscreenControls=[&]{controlMenu.toggle();};
         auto runAction=[&](auto&& action){try{action();error.clear();}catch(const std::exception& e){error=e.what();}};
+        auto responsiveDesktop=[&]{
+            const auto model=findDepthModel();
+            if(model.filename().wstring().find(L"depth-anything-v2-small")==std::wstring::npos)throw std::runtime_error("Responsive desktop needs the Depth Anything V2 Small ONNX model in models/.");
+            settings.screen.model=utf8(model.wstring());settings.screen.quality=518;settings.screen.depthRate=60;settings.screen.smoothing=.16f;settings.screen.depth=true;
+            update();notice="Responsive desktop: Small model, 518 px, up to 60 depth updates per second. Desktop rendering stays on its own cadence.";
+        };
         auto pollPreparedGame=[&]{
             if(!gamePrepared||qpc()<nextGameScan)return;
             nextGameScan=qpc()+.1;
@@ -510,6 +545,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 break;
             }LocalFree(args);}
         if(smoke&&wcsstr(GetCommandLineW(),L"--source-smoke")){sourceKind=3;sourceConfig.kind=SourceKind::Screen;requestedTool=1;}
+        if(wcsstr(GetCommandLineW(),L"--responsive-screen"))responsiveDesktop();
         if(smoke&&wcsstr(GetCommandLineW(),L"--vlc-smoke")){sourceKind=4;sourceConfig.kind=SourceKind::Vlc;requestedTool=1;}
         if(wcsstr(GetCommandLineW(),L"--games")){requestedTool=8;sourceKind=5;sourceConfig.kind=SourceKind::DirectEyes;}
         std::string renderCheck="Render checks have not run in this session.";
@@ -541,11 +577,16 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                     DWORD foregroundPid=0,gamePid=0;GetWindowThreadProcessId(GetForegroundWindow(),&foregroundPid);GetWindowThreadProcessId(outputGame,&gamePid);
                     RECT positioned{};GetWindowRect(outputWindow,&positioned);
                     if(!EqualRect(&positioned,&rect)&&rect.right>rect.left&&rect.bottom>rect.top)SetWindowPos(outputWindow,nullptr,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_NOZORDER);
-                    const bool show=!IsIconic(outputGame)&&foregroundPid==gamePid;
+                    // Our own menu taking focus must not drop the 3D image being tuned.
+                    const bool show=!IsIconic(outputGame)&&(foregroundPid==gamePid||foregroundPid==GetCurrentProcessId());
                     if(show&&!IsWindowVisible(outputWindow))SetWindowPos(outputWindow,HWND_TOPMOST,0,0,0,0,SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW);
                     else if(!show&&IsWindowVisible(outputWindow))ShowWindow(outputWindow,SW_HIDE);
                 }
             }
+            // While the 3D output lies over the game, the game's provider stops presenting underneath
+            // it (two full-refresh swap chains on one display flashed black) and paces its pairs to
+            // the rate this output can show: one per eye cycle.
+            source.announceDirect(sourceKind==5&&outputWindow&&!outputEmbedded&&(outputGame||fullscreenMode)&&IsWindowVisible(outputWindow),settings.refresh>0?uint32_t(1e6*cycleLength(settings.sequence)/settings.refresh):0);
             if(outputStop){outputStop=false;if(gamePrepared){cancelPreparation();source.stop();}stopOutput();}
             try{pollPreparedGame();}catch(const std::exception& e){cancelPreparation();if(outputGame)stopOutput();source.stop();prepareStatus=std::string("Preparation stopped: ")+e.what();error=prepareStatus;}
             if(fullscreenRequested){fullscreenRequested=false;runAction([&]{if(fullscreenMode)startOutput(presenter.status().preview,true);else startFullscreenOutput();});}
@@ -595,12 +636,13 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 auto sch=es.scheduled?NvidiaSchedule{0,0,settings.phaseUs}:nvidiaSchedule(settings.refresh,settings.phaseUs);
                 log<<std::fixed<<std::setprecision(1)<<"t="<<now<<" refresh="<<settings.refresh<<" hdr="<<settings.hdr<<" phase="<<settings.phaseUs<<" boundary="<<sch.boundaryUs<<" x="<<sch.delayUs<<" shutter="<<settings.leftUs<<"/"<<settings.rightUs<<" swap="<<settings.swapEyes<<" seq="<<int(settings.sequence)
                    <<" | out="<<rs.running<<" preview="<<rs.preview<<" locked="<<rs.locked<<" hz="<<std::setprecision(3)<<rs.measuredHz<<std::setprecision(1)<<" presents="<<rs.presents<<" misses="<<rs.misses<<" resyncs="<<rs.resyncs<<" slipsPerSec="<<rs.slipsLastSecond<<" composed="<<rs.composed<<" modeChanges="<<rs.modeChanges<<" lead="<<rs.leadBins[0]<<"/"<<rs.leadBins[1]<<"/"<<rs.leadBins[2]<<"/"<<rs.leadBins[3]<<"/"<<rs.leadBins[4]<<"/"<<rs.leadBins[5]<<" maxIntervalMs="<<rs.maxIntervalMs<<" vblankJitterUs="<<rs.vblankJitterRmsUs<<"/"<<rs.vblankJitterMaxUs<<" presentJitterUs="<<rs.presentJitterUs<<" gpuPriority=\""<<rs.gpuPriority<<"\" illum="<<int(settings.illumination)<<" strobe="<<settings.strobeStartUs<<"+"<<settings.strobeLengthUs<<" scanStart="<<settings.scanStartUs<<" band="<<settings.bandHeight<<"@"<<settings.bandCenter<<" guard="<<settings.guardLevel<<" floor="<<settings.blackFloor<<" cancel="<<settings.cancelCrosstalk<<"x"<<settings.cancelStrength<<" leak="<<settings.leakProfile[0]<<"/"<<settings.leakProfile[3]<<"/"<<settings.leakProfile[7]<<" msg=\""<<rs.message<<"\""
+                   <<" blackOnImage="<<rs.blackOnImage<<" clockReacquires="<<rs.clockReacquires
                    <<" | emitter="<<int(es.state)<<" cmds="<<es.commands<<" late="<<es.late<<" errors="<<es.errors<<" lastUs="<<es.lastTransferUs<<" maxUs="<<es.maxTransferUs<<" sendErrUs="<<es.sendErrorLastUs<<"/"<<es.sendErrorRmsUs<<"/"<<es.sendErrorMaxUs<<" writes="<<es.timingWrites<<" msg=\""<<es.message<<"\"";
                 if(settings.lcd.enabled){const auto& t=settings.lcd;log<<" | lcd settle="<<t.settleUs<<" duration="<<t.durationUs<<" phase="<<t.phaseUs<<" leftAdjust="<<t.leftAdjustUs<<" rightAdjust="<<t.rightAdjustUs<<" guard="<<t.guardUs<<" scanComp="<<t.compensateScanout<<" scan="<<t.scanoutUs<<" row="<<t.referencePosition<<" devicePeriod="<<es.aperturePeriodUs<<" deviceDuration="<<es.apertureDurationUs;}
                 // Capture source: frame count, drops, packed frame size and age, so a capture that stalls,
                 // resizes or crops when the game gains focus shows up next to the presenter's timing.
                 {auto frame=source.latest();log<<" | capture: kind="<<sourceKind<<" frames="<<ss.frames<<" dropped="<<ss.dropped<<" size="<<(frame?frame->width:0)<<"x"<<(frame?frame->height:0)<<" encoding="<<(frame?int(frame->encoding):-1)<<" sdrWhite="<<(frame?frame->sdrWhiteLevel:0)<<" aligned="<<(frame&&frame->alignmentApplied)<<" ageMs="<<(ss.lastFrame>0?(now-ss.lastFrame)*1000:-1.)<<" msg=\""<<ss.message<<"\"";
-                 if(sourceKind==3)log<<" depth: maps="<<ss.depthFrames<<" net="<<ss.netWidth<<"x"<<ss.netHeight<<" inferMs="<<ss.depthMs<<" ageMs="<<ss.depthAgeMs<<" convertMs="<<ss.convertMs<<" helper=\""<<ss.depthMessage<<"\"";}
+                 if(sourceKind==3)log<<" depth: maps="<<ss.depthFrames<<" net="<<ss.netWidth<<"x"<<ss.netHeight<<" inferMs="<<ss.depthMs<<" updatesPerSec="<<ss.depthFps<<" ageMs="<<ss.depthAgeMs<<" convertMs="<<ss.convertMs<<" helper=\""<<ss.depthMessage<<"\"";}
                 auto gs=gameSync.status();
                 log<<" | hook: hosting="<<gs.hosting<<" hooked="<<gs.hooked<<" driving="<<gs.driving<<" game=\""<<gs.game<<"\" pid="<<gs.pid<<" frames="<<gs.frames<<" triggers="<<gs.triggers<<" misses="<<gs.misses<<" guesses="<<gs.guesses<<" hz="<<std::setprecision(3)<<gs.measuredHz<<std::setprecision(1)<<" msg=\""<<gs.message<<"\"\n";}catch(...){}}}
             if(es.identity!="unassigned" && (settings.emitterId!=es.identity || settings.emitterFirmware!=es.firmwareVersion)){settings.emitterId=es.identity;settings.emitterFirmware=es.firmwareVersion;settings.validated=false;runAction(update);}
@@ -801,6 +843,8 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                     }
                     if(sourceKind==3){
                         label("WHOLE SCREEN IN 3D (AI DEPTH)");
+                        if(ImGui::Button("Responsive desktop"))runAction(responsiveDesktop);
+                        paragraph("Small model at 518 px, targeting 60 depth updates/s. Higher resolutions and larger models update depth more slowly.");
                         paragraph("Captures a display, estimates every pixel's depth with a neural network (Depth Anything V2 Small through ONNX Runtime and DirectML, in its own low-priority process) and shows the result over the output display. Mouse and keyboard go through to the desktop, and Windows draws the cursor above it at screen depth. Not yet verified through the glasses.");
                         if(!displays.empty()){screenDisplayIndex=std::clamp(screenDisplayIndex,0,int(displays.size())-1);ImGui::SetNextItemWidth(280*dpi);
                             if(ImGui::BeginCombo("Convert display",displays[screenDisplayIndex].name.c_str())){for(size_t i=0;i<displays.size();++i)if(ImGui::Selectable(displays[i].name.c_str(),int(i)==screenDisplayIndex))screenDisplayIndex=int(i);ImGui::EndCombo();}
@@ -811,8 +855,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                         ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##screensmooth",&settings.screen.smoothing,0,.95f,"Depth smoothing %.2f");
                         {int quality=settings.screen.quality<=518?0:settings.screen.quality<=700?1:2;ImGui::SetNextItemWidth(280*dpi);if(ImGui::Combo("Network input",&quality,"Fast (518 px)\0Balanced (700 px)\0Fine (924 px)\0")){settings.screen.quality=quality==0?518u:quality==1?700u:924u;changed=true;}
                          int steps=int(settings.screen.steps);ImGui::SetNextItemWidth(280*dpi);if(ImGui::SliderInt("Search steps per pixel",&steps,4,64)){settings.screen.steps=unsigned(steps);changed=true;}
-                         float rate=float(settings.screen.depthRate);ImGui::SetNextItemWidth(280*dpi);if(ImGui::SliderFloat("Depth updates per second",&rate,5,60,"%.0f")){settings.screen.depthRate=rate;changed=true;}
-                         ImGui::SameLine();ImGui::TextDisabled("(never more than half the GPU: %.0f ms per map now)",ss.depthMs);}
+                         float rate=float(settings.screen.depthRate);ImGui::SetNextItemWidth(280*dpi);if(ImGui::SliderFloat("Depth update limit",&rate,5,60,"%.0f /s")){settings.screen.depthRate=rate;changed=true;}
+                         ImGui::Text("Actual depth: %.1f updates/s | %.0f ms old | inference %.1f ms",ss.depthFps,ss.depthAgeMs,ss.depthMs);
+                         ImGui::TextDisabled("Depth pauses on an unchanged desktop; GPU time is reserved for stereo output.");}
                         changed|=ImGui::Checkbox("3D depth (Ctrl+Alt+Insert)",&settings.screen.depth);ImGui::SameLine();changed|=ImGui::Checkbox("Show depth map",&settings.screen.showDepth);
                         {static std::vector<std::filesystem::path> models;static double modelsScanned=-10;if(qpc()-modelsScanned>5){modelsScanned=qpc();models=listDepthModels();if(sourceConfig.depthModel.empty())sourceConfig.depthModel=findDepthModel();}
                          std::error_code ec;const bool helperFound=std::filesystem::exists(sourceConfig.depthHelper,ec);
@@ -1271,6 +1316,25 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                     if(!EqualRect(&expected,&actualGame))throw std::runtime_error("Game output does not cover its client area.");
                 }
                 if(sourceKind==3){
+                    if(fullscreenSmoke){
+                        // Exercise the F11 round trip, then selecting AI desktop
+                        // from another fullscreen source, using the real paths.
+                        startOutput(true,true);
+                        if(screenOutput||outputPassThrough)throw std::runtime_error("Embedded preview retained desktop overlay input mode.");
+                        startFullscreenOutput();
+                        if(!screenOutput||!outputPassThrough)throw std::runtime_error("F11 lost desktop input passthrough.");
+                        sourceKind=0;startFullscreenOutput();sourceKind=3;update(false);
+                        const auto inputStyle=GetWindowLongPtrW(outputWindow,GWL_EXSTYLE);
+                        const auto required=WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED;
+                        BYTE alpha=0;DWORD flags=0;COLORREF key=0;
+                        if(!screenOutput||!outputPassThrough||GetParent(outputWindow)||(inputStyle&required)!=required||
+                           !GetLayeredWindowAttributes(outputWindow,&key,&alpha,&flags)||alpha!=255||!(flags&LWA_ALPHA))
+                            throw std::runtime_error("AI desktop fullscreen must remain an opaque, nonactivating click-through overlay.");
+                        RECT rect{};GetWindowRect(outputWindow,&rect);
+                        if(!EqualRect(&rect,&displays[displayIndex].rect))throw std::runtime_error("AI desktop overlay must cover the output display.");
+                        for(const POINT point:{POINT{rect.left+32,rect.top+32},POINT{(rect.left+rect.right)/2,(rect.top+rect.bottom)/2}})
+                            if(WindowFromPoint(point)==outputWindow)throw std::runtime_error("AI desktop overlay intercepts desktop mouse targeting.");
+                    }
                     for(HWND window:{controlWindow,outputEmbedded?controlWindow:outputWindow}){
                         DWORD affinity=0;if(!GetWindowDisplayAffinity(window,&affinity)||affinity!=WDA_EXCLUDEFROMCAPTURE)
                             throw std::runtime_error("Screen source output would capture itself after switching views.");

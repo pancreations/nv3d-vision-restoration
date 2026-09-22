@@ -45,7 +45,7 @@ int wmain(int argc,wchar_t** argv){
         if(e.dwDebugEventCode==CREATE_THREAD_DEBUG_EVENT)CloseHandle(e.u.CreateThread.hThread);
         if(e.dwDebugEventCode==LOAD_DLL_DEBUG_EVENT&&e.u.LoadDll.hFile){if(traceLoads){wchar_t path[1024]{};if(GetFinalPathNameByHandleW(e.u.LoadDll.hFile,path,1024,0))std::wprintf(L"LOAD: %ls\n",path);}CloseHandle(e.u.LoadDll.hFile);}
         if(traceLoads&&e.dwDebugEventCode==OUTPUT_DEBUG_STRING_EVENT){auto& info=e.u.DebugString;char bytes[4096]{};SIZE_T count=0;
-            const SIZE_T length=std::min(SIZE_T(info.nDebugStringLength)*(info.fUnicode?2:1),sizeof(bytes)-2);
+            const SIZE_T length=std::min<SIZE_T>(SIZE_T(info.nDebugStringLength)*(info.fUnicode?2:1),sizeof(bytes)-2);
             if(ReadProcessMemory(pi.hProcess,info.lpDebugStringData,bytes,length,&count)){
                 if(info.fUnicode)std::wprintf(L"DEBUG: %ls\n",reinterpret_cast<const wchar_t*>(bytes));else std::printf("DEBUG: %s\n",bytes);
             }

@@ -26,6 +26,11 @@ public:
     HRESULT submit(ID3D11Texture2D* texture,UINT subresource,Eye eye,uint64_t pairId,
         Encoding encoding=Encoding::SRGB,std::stop_token stop={},const D3D11_BOX* region=nullptr,bool deferPublication=false);
     bool connected()const;
+    // The reader's output currently lies over this producer's window, so the
+    // producer's own presentation is unseen; and the interval (microseconds,
+    // 0 = unknown) at which that output can show a new pair.
+    bool covered()const;
+    uint32_t pairPeriodUs()const;
     // An adapter may stage copies before Present, then expose the pair only
     // after that Present succeeds. S_FALSE means the partner eye is pending.
     HRESULT commit();
@@ -44,6 +49,9 @@ public:
     HRESULT open(ID3D11Device* device,uint32_t channel);
     HRESULT acquire(); // S_FALSE: no pair yet; broken pipe: producer closed
     void release();
+    // Refresh at least every 250 ms while covering; the producer treats a
+    // stale announcement as uncovered.
+    void announce(bool covering,uint32_t pairPeriodUs);
     ID3D11Texture2D* texture()const;
     uint64_t pairId()const;
     Encoding encoding()const;

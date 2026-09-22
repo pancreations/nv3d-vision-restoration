@@ -1,4 +1,82 @@
-# GPU-load flashing: opaque output overlay (2026-09-15)
+# GPU-load flashing
+
+## Game stereo: 32 pairs/s cap and the presenting game window (2026-09-20)
+
+Psychonauts 2 through the geo-11 direct-eye runtime, 3840x2160 HDR / 240 Hz,
+Left / Black / Right / Black. The user reported the 3D at about 30 fps, black
+flashes visible on the screen itself, the game window "fighting" the 3D window, and
+AI desktop also at 30 fps.
+
+Evidence (`reports/framerate-repair-backup-20260920-154445`): the app presented at
+240/s throughout while the provider delivered exactly 32.0 pairs/s (`max-gap`
+33.5 ms) after delivering 120 pairs/s in the menu. Every direct-eye pair made two
+GPU-completion polls with a 1 ms sleep. Windows 11 does not honour a raised timer
+resolution for a process whose window is covered, so each sleep lasted one 15.625 ms
+tick: 2 x 15.625 ms = 31.25 ms = 32.0 pairs/s. The screen conversion had the same
+fault: a "1 ms" event wait per loop against a 16.7 ms pair interval renders on every
+second tick, again 32 pairs/s. The emitter's USB side was healthy in the same log
+(0 errors, 120 commands/s); `blackOnImage` rose to 405 and composition changes to 22.
+
+Changes:
+
+- `shortWait()` (`src/gpu_completion.h`): a 0.5 ms high-resolution waitable timer,
+  optionally also waiting on an event. It replaces the 1-2 ms sleeps in the direct-eye
+  producer and reader, the geo-11 output adapter, window capture and screen conversion.
+- The reader announces that the app's output covers the game window and the pair
+  interval it can show (see `DIRECT-EYES.md`). While covered, the in-game adapter stops
+  presenting its own 4K swap chain at 240 Hz underneath the app's output and admits
+  one game frame per announced interval (60/s for this sequence at 240 Hz).
+- Fullscreen output with a game as the source on the same display now uses the
+  click-through, non-activating game overlay and leaves the game focused, instead of
+  taking the foreground. `tools/Set-LiveGameOverlay.ps1` is no longer needed for that.
+
+Verification: Release build; core, direct-eye transport and conversion shader tests;
+`Test-Geo11Capture.ps1` x64 (sbs uncovered; sbs and katanga_vr covered: 0 presents/s
+while covered, 90 ordered pairs); `--smoke-test --source-smoke` and
+`--smoke-test --games --game-overlay-smoke` pass. Installed the app, both runtime
+architectures under `build/bin/Release/runtime`, and the x64 runtime in the
+Psychonauts 2 folder. Not yet checked under gameplay: the pair rate in
+`VisionStereo11.log` (`pairs/s`, `covered=1`), `blackOnImage` in `session.log`, and
+what the user sees. Removing the second swap chain removes one known contender for
+the display path; it does not establish that every black flash is gone.
+
+## Direct-flip recovery repair (2026-09-18)
+
+Window capture at 3840x2160 HDR / 240 Hz again produced black flashes visible
+without glasses. The session recorded bursts up to 162 timing misses in a reported
+second, including while direct flip remained active. Capture continued publishing
+complete pairs. Misses are prediction/command diagnostics, not a flash count.
+
+The presenter applied the DWM two-report offset filter to direct flip too. If the
+present-to-refresh offset changes on successive reports during repeated missed
+refreshes, that filter can keep the old mapping indefinitely. Future black/image
+slots are then selected against a stale refresh prediction. Direct-flip feedback
+now updates the anchor immediately; composed or unknown presentation retains the
+two-report filter for the previously observed DWM wobble. Resize, cadence changes,
+and resynchronization clear the anchor. No display mode, BFI sequence, queue depth,
+or emitter firmware change is part of this repair.
+
+The session log now includes `blackOnImage` (sampled reported scanouts where an
+inserted black frame landed in an image slot) and `clockReacquires`. These counters
+do not inspect source pixels or measure the physical screen. The status message no
+longer incorrectly promises that a miss cannot cause blanking or affects only one
+refresh: already queued frames can remain wrong until the corrected frames arrive.
+
+Verification: Release build; core regression for sustained direct-flip slips,
+composed wobble, persistent composed delay, mode transition, duplicate feedback,
+and present-counter rollover; GPU texture integration; screen conversion shader;
+and hidden UI/presenter startup smoke all pass. Build: `build/capture-flashing`.
+The verified executable is installed at `build/bin/Release/VisionRestoration.exe`
+and the app was restarted. SHA256:
+`04E8E71CA0541ED5CB1F998E80522C60E626ABF4438086B0D451CC91C0B58B5D`.
+Previous executable, profiles and log are in
+`reports/capture-repair-backup-20260918-054437`.
+
+The game/source window had closed before installation. Visual validation under
+the original gameplay load remains pending. The repair removes a reproducible
+recovery defect; it does not establish that all reported black flashes are fixed.
+
+## Opaque output overlay (2026-09-15)
 
 The user reported visible black flashes while watching a movie with AI desktop
 conversion and a Blender render running. The live session used 3840x2160 HDR at

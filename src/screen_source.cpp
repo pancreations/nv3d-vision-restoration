@@ -10,6 +10,7 @@
 #include "screen_depth.h"
 #include "screen_depth_shader.h"
 #include "depth_channel.h"
+#include "gpu_completion.h"
 #include <d3dcompiler.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
@@ -152,10 +153,10 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
         t.netW=w;t.netH=h;
     };
     std::vector<float> rawDepth,nearness;bool haveDepth=false,dirty=false,netDirty=false,stagingPending=false,serviceStarted=false;unsigned serviceQuality=0;std::string serviceModel;
-    uint64_t settingsRevision=0,depthFrames=0;double lastRender=0,lastTimestamp=0,stagingTimestamp=0,depthTimestamp=0,inferenceMs=0,convertMs=0,lastStatus=0,lastSubmit=0;
+    uint64_t settingsRevision=0,depthFrames=0,rateFrames=0;double nextRender=0,lastTimestamp=0,stagingTimestamp=0,depthTimestamp=0,inferenceMs=0,convertMs=0,lastStatus=0,nextSubmit=0,rateStart=qpc(),depthFps=0;
     while(!stop.stop_requested()){
         ScreenSettings s;uint64_t revision;{std::lock_guard l(mutex_);s=screen_;revision=screenRevision_;}
-        if(revision!=settingsRevision){settingsRevision=revision;dirty=true;normalizer.smoothing=s.smoothing;}
+        if(revision!=settingsRevision){settingsRevision=revision;dirty=true;nextRender=nextSubmit=0;normalizer.smoothing=s.smoothing;}
         bool newPicture=false;
         if(auto frame=frames.TryGetNextFrame()){
             // Drain to the most recent picture; a frame arrives for every change of the desktop.
@@ -167,23 +168,26 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
             context->CopySubresourceRegion(t.picture.Get(),0,0,0,0,texture.Get(),0,nullptr);
             lastTimestamp=double(frame.SystemRelativeTime().count())/1e7;frame.Close();newPicture=true;dirty=true;netDirty=true;
         }
-        if(!t.picture){std::this_thread::sleep_for(std::chrono::milliseconds(2));continue;}
+        if(!t.picture){shortWait();continue;}
         // The helper starts once the picture size is known and restarts when the quality or the model changes.
         if(s.depth&&(!serviceStarted||serviceQuality!=s.quality||serviceModel!=s.model)){
             service.stop();serviceStarted=true;serviceQuality=s.quality;serviceModel=s.model;normalizer.reset();haveDepth=false;stagingPending=false;netDirty=true;
+            inferenceMs=depthTimestamp=nextSubmit=depthFps=0;rateStart=qpc();rateFrames=depthFrames;
             service.start(config.depthHelper,s.model.empty()?config.depthModel:std::filesystem::path(wide(s.model)),adapterId,t.width,t.height,std::clamp(s.quality,depth::patch,depth::maxSide),config.depthLog);
         }
         if(serviceStarted&&service.ready()){
             const NetSize n=service.netSize();ensureNet(n.width,n.height);
             // Picture for the network, at most depthRate times a second and never more often than
             // twice the network's own run time, so the network takes at most half of the GPU (a
-            // 38 ms Large model then runs about 13 times a second, Small keeps its 30). Shrunk
+            // 38 ms Large model then runs about 13 times a second, Small can target 60). Shrunk
             // through the mip chain and read back once the GPU is done with it.
             const double interval=std::max(s.depthRate>0?1/s.depthRate:0.,inferenceMs*2/1000);
-            if(netDirty&&!stagingPending&&service.pictureFree()&&qpc()-lastSubmit>=interval){
+            if(netDirty&&!stagingPending&&service.pictureFree()&&qpc()>=nextSubmit){
                 context->GenerateMips(t.pictureView.Get());
                 renderer.downscale(context,t.pictureView.Get(),t.netTarget.Get(),n.width,n.height,std::max(std::log2(float(t.width)/float(n.width)),0.f),config.captureHDR,config.sdrWhiteLevel);
-                context->CopyResource(t.netStaging.Get(),t.netInput.Get());context->Flush();stagingPending=true;stagingTimestamp=lastTimestamp;netDirty=false;lastSubmit=qpc();
+                context->CopyResource(t.netStaging.Get(),t.netInput.Get());context->Flush();stagingPending=true;stagingTimestamp=lastTimestamp;netDirty=false;
+                // Preserve the requested cadence instead of accumulating each late wake.
+                const double submitted=qpc();nextSubmit+=interval;if(nextSubmit<=submitted)nextSubmit=submitted+interval;
             }
             if(stagingPending){
                 D3D11_MAPPED_SUBRESOURCE m{};HRESULT h=context->Map(t.netStaging.Get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&m);
@@ -199,12 +203,18 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
         }
         // Both eyes are drawn when the picture, the depth or the settings changed, at most pairRate times a second.
         const double now=qpc();
-        if(dirty&&now-lastRender>=(s.pairRate>0?1/s.pairRate:0)){
+        if(dirty&&now>=nextRender){
             renderer.render(context,t.pictureView.Get(),haveDepth&&s.depth?t.nearView.Get():nullptr,t.sbsTarget.Get(),t.width,t.height,s);
             publish(t.sbs.Get(),t.width*2,t.height,lastTimestamp?lastTimestamp:now,config.captureHDR?Encoding::LinearScRGB:Encoding::SRGB,0,0);
-            convertMs=(qpc()-now)*1000;lastRender=now;dirty=false;
+            convertMs=(qpc()-now)*1000;dirty=false;
+            // Keep a steady cadence: adding the interval to the actual wake time
+            // accumulated timer/capture delays and reduced a 60 fps target to 58.
+            // Skip missed deadlines after an idle desktop or GPU stall; no backlog.
+            const double interval=s.pairRate>0?1/s.pairRate:0;
+            nextRender+=interval;if(nextRender<=now)nextRender=now+interval;
         }
         if(now-lastStatus>.25){lastStatus=now;
+            if(now-rateStart>=1){depthFps=double(depthFrames-rateFrames)/(now-rateStart);rateFrames=depthFrames;rateStart=now;}
             std::ostringstream m;m<<std::fixed<<std::setprecision(1);std::string depthMessage=service.started()?service.message():service.error();
             if(!s.depth)m<<"Screen "<<t.width<<"x"<<t.height<<" mirrored in 2D (depth off)";
             else if(!service.started())m<<"Screen "<<t.width<<"x"<<t.height<<" in 2D: "<<service.error();
@@ -212,10 +222,12 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
             else if(!service.running()&&!service.ready())m<<"Screen "<<t.width<<"x"<<t.height<<" in 2D: the depth helper exited";
             else if(!service.ready())m<<"Screen "<<t.width<<"x"<<t.height<<" in 2D while the depth network loads (a few seconds)";
             else if(!haveDepth)m<<"Screen "<<t.width<<"x"<<t.height<<": waiting for the first depth map";
-            else m<<"Screen "<<t.width<<"x"<<t.height<<" in 3D: depth "<<t.netW<<"x"<<t.netH<<" every "<<inferenceMs<<" ms, "<<(now-depthTimestamp)*1000<<" ms old; conversion "<<convertMs<<" ms";
-            std::lock_guard l(mutex_);status_.message=m.str();status_.depthMessage=depthMessage;status_.netWidth=t.netW;status_.netHeight=t.netH;status_.depthMs=inferenceMs;status_.depthAgeMs=haveDepth?(now-depthTimestamp)*1000:0;status_.convertMs=convertMs;status_.depthFrames=depthFrames;
+            else m<<"Screen "<<t.width<<"x"<<t.height<<" in 3D: depth "<<t.netW<<"x"<<t.netH<<" at "<<depthFps<<" updates/s, inference "<<inferenceMs<<" ms, "<<(now-depthTimestamp)*1000<<" ms old; conversion "<<convertMs<<" ms";
+            std::lock_guard l(mutex_);status_.message=m.str();status_.depthMessage=depthMessage;status_.netWidth=t.netW;status_.netHeight=t.netH;status_.depthMs=inferenceMs;status_.depthAgeMs=haveDepth?(now-depthTimestamp)*1000:0;status_.convertMs=convertMs;status_.depthFrames=depthFrames;status_.depthFps=haveDepth&&s.depth?depthFps:0;
         }
-        if(!newPicture){if(service.depthEvent())WaitForSingleObject(service.depthEvent(),1);else std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+        // A "1 ms" wait is a 15.6 ms tick without a raised timer resolution; with a 16.7 ms pair interval
+        // only every second tick then rendered, which held the conversion at 32 pairs a second.
+        if(!newPicture)shortWait(service.depthEvent());
     }
     session.Close();frames.Close();service.stop();
 }

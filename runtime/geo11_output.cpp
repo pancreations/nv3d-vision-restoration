@@ -16,6 +16,7 @@
 #include "stereo_blit_shader.h"
 #include "geo11_output_mode.h"
 #include "producer_wait.h"
+#include "gpu_completion.h"
 #include "direct_eyes.h"
 #ifdef VISION_STEREO_TESTING
 #include "output_test_api.h"
@@ -127,7 +128,7 @@ class StereoChain final:public IDXGISwapChain4 {
                 if(hr!=DXGI_ERROR_WAS_STILL_DRAWING){if(FAILED(hr))return hr;break;}
                 // A paused app may retain its pair indefinitely. Wait for
                 // ownership or disconnect; a slow reader is not a GPU error.
-                Sleep(1);
+                vision::shortWait();
             }
         }
         ++directSerial_;return S_OK;
@@ -147,7 +148,7 @@ class StereoChain final:public IDXGISwapChain4 {
     ComPtr<ID3D11VertexShader> vs_;ComPtr<ID3D11PixelShader> ps_;ComPtr<ID3D11Buffer> constants_;ComPtr<ID3D11SamplerState> sampler_;
     ComPtr<ID3D11Texture2D> snapshot_;ComPtr<ID3D11ShaderResourceView> snapshotView_;D3D11_TEXTURE2D_DESC snapshotDesc_{};
     ComPtr<ID3D11RenderTargetView> outputTarget_;
-    HANDLE latency_=nullptr,producerPermit_=nullptr;std::jthread worker_;std::atomic<bool> resized_{false};std::atomic<UINT> logicalPresents_{0};
+    HANDLE latency_=nullptr,producerPermit_=nullptr,pairReady_=nullptr,pumpTimer_=nullptr;std::jthread worker_;std::atomic<bool> resized_{false};std::atomic<UINT> logicalPresents_{0};
     std::atomic<DXGI_COLOR_SPACE_TYPE> colorSpace_{DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709};
     std::atomic<uint64_t> received_{0};std::atomic<bool> lost_{false};
     HRESULT createLogicalBuffer(){
@@ -219,7 +220,7 @@ class StereoChain final:public IDXGISwapChain4 {
                 // submitted game frame and can keep its previous snapshot.
                 if(pendingPair_){
                     {std::lock_guard lock(stateMutex_);pendingPair_->serial=++serial_;pendingPair_->state=SlotState::Ready;}
-                    pendingPair_=nullptr;pendingPairPool_.reset();
+                    pendingPair_=nullptr;pendingPairPool_.reset();if(pairReady_)SetEvent(pairReady_);
                     if(++received_==1)log(outputMode_==vision::geo11::OutputMode::Katanga?"Acquired first GPU-completed full-resolution Geo11 pair":"Acquired first GPU-completed pair from the existing Geo11 packed output");
                 }
                 return S_OK;
@@ -395,7 +396,13 @@ class StereoChain final:public IDXGISwapChain4 {
         unsigned slot=0;int sequence=0;bool previouslyEnabled=false;DXGI_COLOR_SPACE_TYPE space=DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
         uint64_t reportAt=GetTickCount64(),reportedPresents=0,reportedPairs=0,reportedCompleted=0,missedRefreshes=0,corrections=0,producerBusy=0;UINT previousRefresh=0,previousCount=0;
         DXGI_SWAP_CHAIN_DESC gameDesc;{std::lock_guard lock(producerMutex_);gameDesc=gameDesc_;}
-        int64_t lastPresent=0,maxPresentGap=0;
+        int64_t lastPresent=0,maxPresentGap=0,nextPermit=0;bool pumping=false;
+        auto report=[&](bool enabled,bool focused,bool valid){
+            auto now=GetTickCount64();if(now-reportAt<2000)return;
+            char message[512];const double seconds=double(now-reportAt)/1000;const auto completed=gpuCompleted_.load();
+            sprintf_s(message,"Output: %.1f presents/s, %.1f pairs/s, GPU-completed=%.1f/s, GPU-wait=%.1fms, missed-refresh estimate=%llu, corrections=%llu, max-gap=%.2fms, producer-busy=%llu, stereo=%d, focused=%d, stats=%d, covered=%d",double(presents-reportedPresents)/seconds,double(received_-reportedPairs)/seconds,double(completed-reportedCompleted)/seconds,1000.*double(gpuWaitTicks_.exchange(0))/frequency(),missedRefreshes,corrections,1000.*double(maxPresentGap)/frequency(),producerBusy,int(enabled),int(focused),int(valid),int(pumping));log(message);
+            reportAt=now;reportedPresents=presents;reportedPairs=received_;reportedCompleted=completed;missedRefreshes=corrections=producerBusy=0;maxPresentGap=0;
+        };
         while(!stop.stop_requested()){
 #ifdef VISION_STEREO_TESTING
             if(auto delay=testOutputDelay.exchange(0)){
@@ -403,6 +410,24 @@ class StereoChain final:public IDXGISwapChain4 {
                 Sleep(delay);
             }
 #endif
+            // While the app's 3D output lies over this window, nothing presented here is seen,
+            // and a second full-refresh swap chain under that output contends with it for the
+            // display path (visible black flashes) and for the GPU. Stop presenting; only hand
+            // completed pairs to the app, admitting the game at the rate the app can show them.
+            const bool covered=directProducer_&&directProducer_->covered();
+            if(covered!=pumping){pumping=covered;nextPermit=qpc();slot=0;lastPresent=0;log(covered?"App output covers the game window: presentation paused, pairs paced for the app":"App output no longer covers the game window: presentation resumed");}
+            if(pumping){
+                const auto announced=directProducer_->pairPeriodUs();
+                const int64_t period=frequency()*int64_t(announced>=2000&&announced<=100000?announced:8333)/1000000;
+                auto now=qpc();
+                if(now>=nextPermit){SetEvent(producerPermit_);nextPermit=now-nextPermit>period?now+period:nextPermit+period;}
+                LARGE_INTEGER due;due.QuadPart=-std::max<int64_t>(1,(nextPermit-now)*10000000/frequency());
+                HANDLE handles[2]{pairReady_,pumpTimer_};
+                if(pumpTimer_&&SetWaitableTimer(pumpTimer_,&due,0,nullptr,nullptr,FALSE))WaitForMultipleObjects(2,handles,FALSE,100);else WaitForSingleObject(pairReady_,1);
+                if(stop.stop_requested())break;
+                if(acceptPair()){const auto transfer=publishDirect(stop);if(FAILED(transfer)){if(!stop.stop_requested())log("Geo11 direct-eye transfer failed",transfer);lost_=true;break;}}
+                report(false,true,false);continue;
+            }
             const auto wait=WaitForSingleObject(latency_,20);if(stop.stop_requested())break;
             if(wait==WAIT_TIMEOUT)continue;if(wait!=WAIT_OBJECT_0){lost_=true;log("Output latency wait failed",HRESULT_FROM_WIN32(GetLastError()));break;}
             // Capture/resize may wait inside the game or driver. Output must
@@ -489,11 +514,7 @@ class StereoChain final:public IDXGISwapChain4 {
                 MemoryBarrier();InterlockedIncrement(&sh->seq);if(host.event)SetEvent(host.event);
             }
             if(visible)slot=(slot+1)%cycle;else{slot=0;Sleep(20);}
-            auto now=GetTickCount64();if(now-reportAt>=2000){
-                char message[512];const double seconds=double(now-reportAt)/1000;const auto completed=gpuCompleted_.load();
-                sprintf_s(message,"Output: %.1f presents/s, %.1f pairs/s, GPU-completed=%.1f/s, GPU-wait=%.1fms, missed-refresh estimate=%llu, corrections=%llu, max-gap=%.2fms, producer-busy=%llu, stereo=%d, focused=%d, stats=%d",double(presents-reportedPresents)/seconds,double(received_-reportedPairs)/seconds,double(completed-reportedCompleted)/seconds,1000.*double(gpuWaitTicks_.exchange(0))/frequency(),missedRefreshes,corrections,1000.*double(maxPresentGap)/frequency(),producerBusy,int(enabled),int(focused),int(valid));log(message);
-                reportAt=now;reportedPresents=presents;reportedPairs=received_;reportedCompleted=completed;missedRefreshes=corrections=producerBusy=0;maxPresentGap=0;
-            }
+            report(enabled,focused,valid);
         }
         if(!directCapture_&&host.connect()&&host.shared->gamePid==GetCurrentProcessId()){InterlockedIncrement(&host.shared->seq);host.shared->active=0;MemoryBarrier();InterlockedIncrement(&host.shared->seq);if(host.event)SetEvent(host.event);}
         if(mmcss)AvRevertMmThreadCharacteristics(mmcss);
@@ -504,8 +525,8 @@ public:
         wchar_t modeName[32]{};GetPrivateProfileStringW(L"VISION_CAPTURE",L"Mode",L"",modeName,32,config.c_str());
         directCapture_=_wcsicmp(modeName,L"geo11")==0;directReverse_=GetPrivateProfileIntW(L"VISION_CAPTURE",L"RightFirst",0,config.c_str())!=0;
     }
-    HRESULT initialize(){producerPermit_=CreateEventW(nullptr,FALSE,TRUE,nullptr);if(!producerPermit_)return HRESULT_FROM_WIN32(GetLastError());auto hr=createLogicalBuffer();if(SUCCEEDED(hr))hr=createOutput();if(SUCCEEDED(hr)&&directCapture_){directProducer_=std::make_unique<vision::direct::Producer>();hr=directProducer_->open(outputDevice_.Get());if(SUCCEEDED(hr))log("Geo11 direct-eye capture ready; app owns sequential presentation");}if(SUCCEEDED(hr)){worker_=std::jthread([this](std::stop_token stop){output(stop);});log("Created independent in-game Geo11 output");}return hr;}
-    ~StereoChain(){log("Releasing logical swapchain");if(worker_.joinable()){worker_.request_stop();worker_.join();}log("Output worker stopped");if(katangaView_)UnmapViewOfFile(const_cast<uint32_t*>(katangaView_));if(katangaMap_)CloseHandle(katangaMap_);if(latency_)CloseHandle(latency_);if(producerPermit_)CloseHandle(producerPermit_);if(gameCompletionEvent_)CloseHandle(gameCompletionEvent_);if(gameCompletionTimer_)CloseHandle(gameCompletionTimer_);}
+    HRESULT initialize(){producerPermit_=CreateEventW(nullptr,FALSE,TRUE,nullptr);pairReady_=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!producerPermit_||!pairReady_)return HRESULT_FROM_WIN32(GetLastError());pumpTimer_=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);auto hr=createLogicalBuffer();if(SUCCEEDED(hr))hr=createOutput();if(SUCCEEDED(hr)&&directCapture_){directProducer_=std::make_unique<vision::direct::Producer>();hr=directProducer_->open(outputDevice_.Get());if(SUCCEEDED(hr))log("Geo11 direct-eye capture ready; app owns sequential presentation");}if(SUCCEEDED(hr)){worker_=std::jthread([this](std::stop_token stop){output(stop);});log("Created independent in-game Geo11 output");}return hr;}
+    ~StereoChain(){log("Releasing logical swapchain");if(worker_.joinable()){worker_.request_stop();worker_.join();}log("Output worker stopped");if(katangaView_)UnmapViewOfFile(const_cast<uint32_t*>(katangaView_));if(katangaMap_)CloseHandle(katangaMap_);if(latency_)CloseHandle(latency_);if(producerPermit_)CloseHandle(producerPermit_);if(pairReady_)CloseHandle(pairReady_);if(pumpTimer_)CloseHandle(pumpTimer_);if(gameCompletionEvent_)CloseHandle(gameCompletionEvent_);if(gameCompletionTimer_)CloseHandle(gameCompletionTimer_);}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** p)override{if(!p)return E_POINTER;*p=nullptr;if(iid==__uuidof(IUnknown)||iid==__uuidof(IDXGIObject)||iid==__uuidof(IDXGIDeviceSubObject)||iid==__uuidof(IDXGISwapChain)||iid==__uuidof(IDXGISwapChain1)||iid==__uuidof(IDXGISwapChain2)||iid==__uuidof(IDXGISwapChain3)||iid==__uuidof(IDXGISwapChain4)){*p=static_cast<IDXGISwapChain4*>(this);AddRef();return S_OK;}return E_NOINTERFACE;}
     ULONG STDMETHODCALLTYPE AddRef()override{return ++refs_;}ULONG STDMETHODCALLTYPE Release()override{auto n=--refs_;if(!n)delete this;return n;}
     HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID k,UINT n,const void* d)override{return physical_->SetPrivateData(k,n,d);}
@@ -529,7 +550,7 @@ public:
             // A full capture queue can mean the user paused the app. Keep
             // the same producer frame pending until ownership returns.
             if(!directCapture_&&qpc()>=deadline){SetEvent(producerPermit_);return DXGI_ERROR_WAIT_TIMEOUT;}
-            Sleep(1);
+            vision::shortWait();
         }
         static std::atomic<int> warnings{0};if(FAILED(hr)&&warnings++<8)log("Geo11 pair acquisition failed",hr);
         if(FAILED(hr)){SetEvent(producerPermit_);return hr;}

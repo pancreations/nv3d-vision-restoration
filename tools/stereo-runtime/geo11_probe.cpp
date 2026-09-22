@@ -92,7 +92,11 @@ struct DirectConsumer {
         check(create(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"Capture reader device");
         check(reader.open(device.Get(),GetCurrentProcessId()),"Geo11 direct-eye channel");
         worker=std::jthread([this](std::stop_token stop){try{
+            // The app's output over the game window: the runtime must stop presenting and still
+            // deliver every pair in order, paced to the announced interval.
+            wchar_t coveredTest[2];const bool covered=GetEnvironmentVariableW(L"VISION_CAPTURE_TEST_COVERED",coveredTest,2)>0;
             while(!stop.stop_requested()){
+                if(covered)reader.announce(true,16667);
                 const auto hr=reader.acquire();if(hr==S_FALSE){Sleep(1);continue;}check(hr,"Capture pair");
                 if(reader.pairId()!=uint64_t(pairs)+1)throw std::runtime_error("Geo11 capture skipped or reordered a pair");
                 if(pairs==1){wchar_t delay[16]{};const auto length=GetEnvironmentVariableW(L"VISION_CAPTURE_TEST_STALL",delay,16);Sleep(length&&length<16?std::min(10000ul,wcstoul(delay,nullptr,10)):200); } // Never overwrite a paused reader's pair.

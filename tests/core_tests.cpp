@@ -64,6 +64,22 @@ int main(){try{
     require(refreshForPresent(0,UINT32_MAX,50)==51,"Present counter wrap preserves next refresh");
     require(presentForRefresh(51,UINT32_MAX,50)==0,"Inverse present mapping handles counter wrap");
     require(refreshForPresent(42,41,1002)==1003,"Late frame feedback reanchors the next prediction");
+    {
+        PresentRefreshAnchor anchor;anchor.observe(40,1000,false);
+        // A direct-flip miss on every report used to keep the old two-report
+        // candidate perpetually unconfirmed, including the black/image parity.
+        for(uint32_t id=41;id<80;++id){
+            const uint64_t actual=1000+2*(id-40);anchor.observe(id,actual,false);
+            require(refreshForPresent(id+1,anchor.present,anchor.refresh)==actual+1,"Direct flip immediately recovers through repeated slips");
+            require(sequenceSlot(Sequence::BlackInsertion,anchor.refresh+1,false).eye==sequenceSlot(Sequence::BlackInsertion,actual+1,false).eye,"Black insertion follows the corrected refresh");
+        }
+        anchor.reset();anchor.observe(40,1000,true);
+        for(uint32_t id=41;id<50;++id){anchor.observe(id,1000+(id-40)+(id%2),true);require(anchor.refresh==1000+(id-40),"Composed one-refresh wobble remains filtered");}
+        anchor.observe(50,1011,true);anchor.observe(51,1012,true);require(anchor.refresh==1012,"Persistent composed delay is accepted");
+        anchor.observe(52,1015,false);require(anchor.refresh==1015,"Transition to direct flip uses actual refresh immediately");
+        anchor.observe(52,1016,false);require(anchor.refresh==1015,"Duplicate present feedback is ignored");
+        anchor.reset();anchor.observe(UINT32_MAX,2000,true);anchor.observe(0,2001,true);require(anchor.refresh==2001,"Anchor handles present counter rollover");
+    }
     Settings identity;identity.emitterId="rp2040:serial1";identity.emitterFirmware="v1";
     require(identity.convergence==0,"Convergence defaults to unchanged alignment");
     for(float value:{-.05f,.023f,.05f}){Settings c;c.convergence=value;auto file=std::filesystem::temp_directory_path()/"vision-convergence-test.ini";saveProfile(file,c);require(loadProfile(file).convergence==value,"Convergence profile round trip");std::filesystem::remove(file);}

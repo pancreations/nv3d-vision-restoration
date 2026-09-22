@@ -55,6 +55,8 @@ The same existing Geo11 adapter supports either in-game presentation or independ
 
 `Producer::submit` accepts an optional source region and deferred publication. With `deferPublication=true`, call `commit()` only after the source Present succeeds; a completed GPU copy alone does not establish a successful game Present. `connected()` reports the reader state. `reset(true)` may discard an unread pair only after the reader has disconnected; a connected reader's unread pair is never reclaimed.
 
+`Reader::announce(covering, pairPeriodUs)` uses the two formerly reserved fields of the v1 block (older apps leave them zero). `covering` is a tick heartbeat that the reader must refresh at least every 250 ms while its output lies over the producer's window; `Producer::covered()` turns false one second after the last refresh, so a closed or crashed reader never leaves a game frozen. `Producer::pairPeriodUs()` is the interval at which the reader can show new pairs. While covered, the geo-11 output adapter presents nothing to the game window and admits one game frame per announced interval; otherwise it presents as before. All polling waits use a high-resolution waitable timer: `Sleep(1)` is a 15.6 ms tick for a covered window on Windows 11.
+
 ## Normal build and validation
 
 The app is `build/bin/Release/VisionRestoration.exe`. Updates use this normal launch location. The separate review executable was removed; game installations and user settings were not changed during consolidation.

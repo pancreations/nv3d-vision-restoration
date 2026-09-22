@@ -66,7 +66,9 @@ The glasses must admit the intended eye's light while excluding the other eye's 
 
 ### 1. Download the portable release
 
-Download `Vision-Restoration-Portable-v0.1.0.zip` from [GitHub Releases](https://github.com/pancreations/nv3d-vision-restoration/releases), extract the entire archive to a writable folder, and run `Start Vision Restoration.cmd`. The ZIP includes the complete application, AI helper and redistributable AI runtime, emitter utilities, x86/x64 game integration, and required runtime files. It never includes NVIDIA's proprietary emitter firmware, AI model weights, Geo11, or a game-specific fix.
+Download `Vision-Restoration-Portable-v0.1.1.zip` from [GitHub Releases](https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.1.1), extract the entire archive to a writable folder, and run `Start Vision Restoration.cmd`. The ZIP includes the complete application, AI helper and redistributable AI runtime, emitter utilities, x86/x64 game integration, and required runtime files. It never includes NVIDIA's proprietary emitter firmware, AI model weights, Geo11, or a game-specific fix.
+
+**New in v0.1.1:** fixes for delayed presentation recovery and the 32-pair/s capture bottleneck, game overlays that retain input focus, and smoother AI desktop capture with a **Responsive desktop** preset and measured depth-update rate. See the [release notes](docs/RELEASE-v0.1.1.md). Gameplay under sustained load and optical performance still need validation.
 
 Whole-screen AI depth needs a model file placed in the included empty `models\` folder. Download [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx) for the fastest option. [Base](https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx) and [Large](https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx) are slower and licensed for non-commercial use. Save each model with a distinct filename. Normal stereo images, window capture, game integration and emitter operation do not need a model.
 
@@ -159,7 +161,7 @@ Self tests that need no emitter:
 - [x] Clean full-screen 3D through the glasses on a 240 Hz OLED (black frame insertion, SDR and HDR)
 - [x] Side-by-side capture from a window (proven with Dolphin)
 - [ ] Whole screen converted with AI depth (built 2026-09-15, checked on the desktop, not yet through the glasses)
-- [x] App-hosted Geo11 DX11 output in two games, keeping original window/input
+- [ ] Stable app-hosted Geo11 DX11 gameplay; capture is implemented, game compatibility remains unresolved
 - [ ] Broad compatibility with existing 3D Vision games and community fixes
 - [ ] Games with native stereo 3D (never tested)
 - [ ] LCD, QLED and Mini-LED displays without ghosting and crosstalk

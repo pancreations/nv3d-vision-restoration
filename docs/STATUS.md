@@ -1,5 +1,11 @@
 # Implementation and validation status
 
+## Experimental v0.1.1 release, 2026-09-22
+
+This update repairs direct-flip timing recovery, replaces coarse polling waits that capped covered-game and AI desktop capture near 32 pairs/s, and pauses the Geo11 adapter's redundant swap-chain presentation while the app covers the game. Fullscreen game output retains game input focus. AI desktop retains click-through input across F11 and source changes, uses steady capture/depth scheduling, and adds a **Responsive desktop** preset, saved depth update limit, and measured depth rate/map age.
+
+See [v0.1.1 release notes](RELEASE-v0.1.1.md) and the [flashing investigation](GPU-LOAD-FLASHING.md). These repairs do not establish that all flashes are gone, that gameplay is stable, or that AI depth is optically correct through the glasses. Existing game and display limitations remain.
+
 ## Experimental v0.1.0 release, 2026-09-17
 
 The portable release contains one app with the left **Tuning** and **Input/Games** tabs, prelaunch **Prepare game**, direct-eye transport, VLC stereo movie input, window capture, AI desktop, and emitter/calibration tools. Prepare watches the exact selected executable outside the visible Games panel, attaches when a provider appears, and starts frame-sequential output when complete eyes and a foreground window are available.

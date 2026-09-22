@@ -10,10 +10,13 @@ namespace {
 constexpr uint32_t magic=0x45595256,version=1;
 enum State:LONG { Initializing,Idle,Filling,Ready,Reading,Closed };
 struct alignas(8) Shared {
-    uint32_t magic=0,version=0,size=0,reserved=0;
+    uint32_t magic=0,version=0,size=0;
+    // Written by the reader (zero from older apps): the tick of its last refresh while its
+    // output covers the producer's window, and the interval at which it can show new pairs.
+    volatile uint32_t coveringTick=0;
     volatile LONG state=Initializing,reader=0;
     uint64_t handle=0,pairId=0;
-    uint32_t encoding=0,reserved2=0;
+    uint32_t encoding=0;volatile uint32_t pairPeriodUs=0;
 };
 static_assert(sizeof(Shared)==48);
 std::wstring name(uint32_t id){return L"Local\\VisionDirectEyes.v1."+std::to_wstring(id);}
@@ -51,6 +54,9 @@ HRESULT Producer::open(ID3D11Device* device,uint32_t channel){
     auto* s=p->map.view;s->magic=magic;s->version=version;s->size=sizeof(Shared);
     InterlockedExchange(&s->state,Idle);impl_=std::move(p);return S_OK;
 }
+// A reader that stops refreshing the tick (closed, hung or crashed) no longer covers the window.
+bool Producer::covered()const{if(!connected())return false;const uint32_t tick=impl_->map.view->coveringTick;return tick&&GetTickCount()-tick<1000;}
+uint32_t Producer::pairPeriodUs()const{return impl_?impl_->map.view->pairPeriodUs:0;}
 bool Producer::connected()const{return impl_&&InterlockedCompareExchange(&impl_->map.view->reader,0,0)!=0&&state(impl_->map.view)!=Closed;}
 HRESULT Producer::submit(ID3D11Texture2D* input,UINT subresource,Eye eye,uint64_t id,Encoding encoding,std::stop_token stop,const D3D11_BOX* region,bool deferPublication){
     if(!impl_||!input||uint32_t(eye)>1||uint32_t(encoding)>2||!id)return E_INVALIDARG;
@@ -103,7 +109,7 @@ HRESULT Producer::reset(bool discardUnreadIfDisconnected){if(!impl_)return E_UNE
 struct Reader::Impl {
     Mapping map;ComPtr<ID3D11Device> device;ComPtr<ID3D11Texture2D> texture;
     ComPtr<IDXGIKeyedMutex> key;uint64_t handle=0;bool acquired=false,registered=false;
-    ~Impl(){if(acquired){key->ReleaseSync(0);InterlockedCompareExchange(&map.view->state,Ready,Reading);}if(registered)InterlockedExchange(&map.view->reader,0);}
+    ~Impl(){if(acquired){key->ReleaseSync(0);InterlockedCompareExchange(&map.view->state,Ready,Reading);}if(registered){map.view->coveringTick=0;map.view->pairPeriodUs=0;InterlockedExchange(&map.view->reader,0);}}
 };
 Reader::Reader()=default;Reader::~Reader()=default;
 HRESULT Reader::open(ID3D11Device* device,uint32_t channel){
@@ -132,6 +138,7 @@ HRESULT Reader::acquire(){
     if(hr!=S_OK){InterlockedCompareExchange(&s->state,Ready,Reading);return FAILED(hr)?hr:DXGI_ERROR_WAS_STILL_DRAWING;}
     p.acquired=true;return S_OK;
 }
+void Reader::announce(bool covering,uint32_t pairPeriodUs){if(!impl_)return;auto* s=impl_->map.view;s->pairPeriodUs=pairPeriodUs;const uint32_t tick=GetTickCount();s->coveringTick=covering?(tick?tick:1):0;}
 void Reader::release(){if(!impl_||!impl_->acquired)return;auto& p=*impl_;p.key->ReleaseSync(0);p.acquired=false;InterlockedCompareExchange(&p.map.view->state,Idle,Reading);}
 ID3D11Texture2D* Reader::texture()const{return impl_&&impl_->acquired?impl_->texture.Get():nullptr;}
 uint64_t Reader::pairId()const{return impl_&&impl_->acquired?impl_->map.view->pairId:0;}

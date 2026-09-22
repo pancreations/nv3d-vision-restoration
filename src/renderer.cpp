@@ -130,14 +130,11 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
         stage("Creating the output surface");
         Settings s;{std::lock_guard l(mutex_);s=settings_;}Surface surface;surface.create(window,&display.adapterLuid,s.hdr);stage("Creating the output shaders");DrawState draw;draw.init(surface.device.Get());stage("Waiting for the first frame slot");
         {ComPtr<IDXGIDevice> dxgi;if(SUCCEEDED(surface.device.As(&dxgi)))dxgi->SetGPUThreadPriority(7);}
-        struct PresentRecord {UINT id;uint64_t expected;Slot slot;};std::deque<PresentRecord> records;
+        struct PresentRecord {UINT id;uint64_t expected;Slot slot;bool muted;};std::deque<PresentRecord> records;
         TimingTracker clock;uint64_t slotIndex=0,revision=0,lastUsbLate=0;UINT lastObserved=0,lastRefresh=0,lastSubmitted=0;unsigned blank=16;unsigned slipWindow=0;double slipWindowStart=0;
-        // Stable present-to-refresh offset. DWM composition (the normal state while the game has focus)
-        // reports each present's refresh with a one-refresh wobble from frame to frame; re-anchoring on
-        // every report flipped the eye sequence by one refresh every other frame, so black-insertion
-        // frames landed on image slots and the picture blacked out and jumped. A new offset is adopted
-        // only after it holds for several consecutive presents (a real composition-mode change).
-        int64_t presentOffset=0,candidateOffset=0;unsigned candidateCount=0;
+        // DWM's wobble filter must not delay direct-flip recovery: with repeated
+        // slips the old offset could remain stale, scheduling black into image slots.
+        PresentRefreshAnchor anchor;
         // PresentRefreshCount already identifies the refresh the image reached.
         // Composition mode is diagnostic information, not an extra display delay.
         ComPtr<IDXGISwapChainMedia> media;surface.swap.As(&media);bool composed=false;
@@ -147,20 +144,19 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
         while(!stop.stop_requested() && IsWindow(window)){
             DWORD wait=WaitForSingleObject(surface.waitable,50);if(wait==WAIT_TIMEOUT){if(!local.presents)stage("Waiting for a frame slot; the swap chain is not turning over");continue;}if(wait!=WAIT_OBJECT_0)throw std::runtime_error("Presentation wait failed.");
             bool paused,overlay,manualResync;int pattern;uint64_t rev;{std::lock_guard l(mutex_);s=settings_;paused=paused_;pattern=pattern_;rev=revision_;overlay=overlay_;manualResync=resyncRequested_;resyncRequested_=false;}
-            if(rev!=revision){revision=rev;begin=qpc();lockedSince=begin;local.elapsed=0;local.timingPassed=false;blank=16;slotIndex=0;clock.reset();records.clear();lastObserved=lastRefresh=lastSubmitted=0;emitter_.suspend();}
+            if(rev!=revision){revision=rev;begin=qpc();lockedSince=begin;local.elapsed=0;local.timingPassed=false;blank=16;slotIndex=0;clock.reset();anchor.reset();records.clear();lastObserved=lastRefresh=lastSubmitted=0;emitter_.suspend();}
             // Change the actual buffer precision and color space with the HDR
             // setting, keeping the output window and image source in place.
             surface.setHdr(s.hdr);
             RECT size{};GetClientRect(window,&size);if(size.right<=0||size.bottom<=0){if(!local.presents)stage("The output window has no size");emitter_.suspend();Sleep(20);continue;}
-            if(unsigned(size.right)!=surface.width || unsigned(size.bottom)!=surface.height){surface.resize(size.right,size.bottom);blank=16;records.clear();clock.reset();emitter_.suspend();}
+            if(unsigned(size.right)!=surface.width || unsigned(size.bottom)!=surface.height){surface.resize(size.right,size.bottom);blank=16;records.clear();clock.reset();anchor.reset();lastObserved=lastRefresh=0;emitter_.suspend();}
             // Anchor the eye sequence to the display refresh counter once statistics are available.
-            // A prediction is provisional: feedback below suspends and reacquires
-            // synchronization when the image actually lands on a different refresh.
+            // Feedback below corrects future submissions when a prediction slips.
             uint64_t slotSeq=slotIndex;
             if(!preview&&lastObserved){UINT previous=0;if(SUCCEEDED(surface.swap->GetLastPresentCount(&previous)))slotSeq=refreshForPresent(previous+1,lastObserved,lastRefresh);}
             auto slot=sequenceSlot(s.sequence,slotSeq,false);
             auto emitterStatus=emitter_.status();auto usbState=emitterStatus.state;
-            auto resync=[&]{emitter_.suspend();blank=16;slotIndex=0;clock.reset();records.clear();lastObserved=lastRefresh=0;local.resyncs++;local.lastResyncSec=qpc()-begin;local.timingPassed=false;};
+            auto resync=[&]{emitter_.suspend();blank=16;slotIndex=0;clock.reset();anchor.reset();records.clear();lastObserved=lastRefresh=0;local.resyncs++;local.lastResyncSec=qpc()-begin;local.timingPassed=false;};
             if(manualResync)resync(); // the viewer asked for it; nothing else here restarts synchronization
             // LCD aperture reacquires after a slip; its scheduler cannot free-run.
             // The existing general path rides through a slipped frame, short lead or late USB command: the eye
@@ -214,34 +210,26 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             if(!local.occluded)check(h,"Present stereo output");
             check(surface.swap->GetLastPresentCount(&id),"Present identifier");
             uint64_t expected=lastObserved?refreshForPresent(id,lastObserved,lastRefresh):0;
-            records.push_back({id,expected,mute?Slot{Eye::Black,false,false}:slot});while(records.size()>64)records.pop_front();lastSubmitted=id;(void)lastSubmitted;
+            records.push_back({id,expected,mute?Slot{Eye::Black,false,false}:slot,mute});while(records.size()>64)records.pop_front();lastSubmitted=id;(void)lastSubmitted;
             DXGI_FRAME_STATISTICS stats{};HRESULT sh=surface.swap->GetFrameStatistics(&stats);
             if(SUCCEEDED(sh)){
-                bool modeChanged=false;
-                if(media){DXGI_FRAME_STATISTICS_MEDIA fm{};if(SUCCEEDED(media->GetFrameStatisticsMedia(&fm))){bool c=fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED||fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE;if(c!=composed){composed=c;local.modeChanges++;modeChanged=true;}local.composed=composed;}}
+                bool modeChanged=false,directFlipReport=false;
+                if(media){DXGI_FRAME_STATISTICS_MEDIA fm{};if(SUCCEEDED(media->GetFrameStatisticsMedia(&fm))){bool c=fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED||fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE;directFlipReport=!c;if(c!=composed){composed=c;local.modeChanges++;modeChanged=true;}local.composed=composed;}}
                 LARGE_INTEGER freq;QueryPerformanceFrequency(&freq);double sync=double(stats.SyncQPCTime.QuadPart)/double(freq.QuadPart);
+                const bool hadClock=clock.samples>=8;
                 clock.observe(stats.SyncRefreshCount,sync);
+                if(hadClock&&clock.samples<8)++local.clockReacquires;
                 bool mismatch=false;
                 if(stats.PresentCount!=lastObserved){
                     auto record=std::find_if(records.begin(),records.end(),[&](auto& r){return r.id==stats.PresentCount;});
                     mismatch=record!=records.end() && record->expected && record->expected!=stats.PresentRefreshCount;
-                    const int64_t observedOffset=int64_t(stats.PresentRefreshCount)-int64_t(stats.PresentCount);
-                    if(!lastObserved){presentOffset=observedOffset;candidateCount=0;}
-                    else if(observedOffset==presentOffset)candidateCount=0;
-                    // Two agreeing reports: a real slip moves the offset and keeps it (follow it at once, or every
-                    // queued frame shows the wrong slot - 8 turned each slip into ~13 wrong frames), while the
-                    // composed wobble alternates every other present and never agrees twice in a row.
-                    else if(observedOffset==candidateOffset){if(++candidateCount>=2){presentOffset=candidateOffset;candidateCount=0;}}
-                    else{candidateOffset=observedOffset;candidateCount=1;}
-                    lastObserved=stats.PresentCount;lastRefresh=uint64_t(int64_t(stats.PresentCount)+presentOffset);
+                    if(record!=records.end()&&!record->muted&&record->slot.eye==Eye::Black&&sequenceSlot(s.sequence,stats.PresentRefreshCount,false).eye!=Eye::Black)++local.blackOnImage;
+                    anchor.observe(stats.PresentCount,stats.PresentRefreshCount,!directFlipReport);
+                    lastObserved=anchor.present;lastRefresh=UINT(anchor.refresh);
                 }
-                // A slipped prediction shows one refresh with the wrong eye; the refresh-anchored
-                // sequence and the fresh present-to-refresh mapping correct the next frame.
-                // A composition-mode change (direct flip <-> DWM composed) moves the present-to-refresh
-                // latency by one refresh: the presents already queued land one refresh off, which the
-                // mismatch check above counts as slips, and the mapping has caught up by the next
-                // frame. Restarting on every mode change made desktop activity that flips composition
-                // (another window presenting, an overlay) into repeated black flashes.
+                // Repair future submissions without a full blanking/relock cycle.
+                // Already queued frames retain their old eye/black slot, so a slip
+                // can affect several refreshes; it is not necessarily a single wrong eye.
                 if(!preview&&blank==0&&mismatch)slip(1);(void)modeChanged;
             }else if(sh==DXGI_ERROR_FRAME_STATISTICS_DISJOINT)resync();
             else if(!preview){local.message="Presentation statistics unavailable; stereo triggers disabled";emitter_.suspend();blank=16;}
@@ -254,7 +242,7 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             if(local.intervals.size()<4096)local.intervals.push_back(local.lastIntervalMs);
             if(preview)local.message="PREVIEW - both eyes side-by-side; no emitter commands";
             else if(paused)local.message="Paused - output black, emitter suspended";
-            else if(local.locked)local.message=std::string("Presentation clock acquired (")+(composed?"DWM composed":"direct flip")+") - optical sync still requires your confirmation"+(local.slipsLastSecond?" - "+std::to_string(local.slipsLastSecond)+" slipped refreshes in the last second: the GPU is busy (each slip shows one refresh with the wrong eye; no blanking)":"");
+            else if(local.locked)local.message=std::string("Presentation clock acquired (")+(composed?"DWM composed":"direct flip")+") - optical sync still requires your confirmation"+(local.slipsLastSecond?" - "+std::to_string(local.slipsLastSecond)+" timing misses in the last second; late black frames can cause visible flashes":"");
             if(now-lastPublish>.25){std::lock_guard l(mutex_);status_=local;lastPublish=now;}
         }
         emitter_.suspend();{std::lock_guard l(mutex_);local.running=false;local.locked=false;status_=local;}
