@@ -4,13 +4,15 @@ Windows frame-sequential stereo output for NVIDIA 3D Vision glasses. The origina
 USB emitter is driven through WinUSB/libusb and its RAM firmware. Clean stereo over the
 whole screen was confirmed through the glasses on 2026-09-13, on a Samsung OLED at
 4K 240 Hz in HDR with software black frame insertion. Other displays, refresh rates and
-sequences are not optically verified.
+sequences need separate optical validation. RP2040 OLED operation at 120 Hz and
+240 Hz with BFI has also been user-confirmed; see [RP2040 setup](RP2040.md).
 
 > **Game integration:** the shared Geo11 hook and game-depth controls are available
-> under **Games**. GPU output checks pass; broad game/optical validation remains
-> incomplete and the real-Geo11 test fixture crashes at shutdown, including without
-> our hook. Earlier game trials are historical and rolled back. Window capture
-> remains a proven fallback. The old ReShade hook remains nonworking.
+> under **Input/Games**. Isolated renderer/transport tests pass; broad game and
+> optical validation remains incomplete. Resident Evil 2 and Metal Gear Solid V
+> retain unresolved failures. Earlier game trials are historical; see
+> [current status](STATUS.md). Window capture remains a proven fallback.
+> The old depth-based ReShade hook remains nonworking.
 
 Double-click **Launch.cmd** to run `build/bin/Release/VisionRestoration.exe`.
 
@@ -127,6 +129,63 @@ Installed VLC is detected in its standard Program Files location. A complete `vl
 
 The integration uses the documented [VLC 3 video callbacks](https://videolan.videolan.me/vlc-3.0/group__libvlc__media__player.html) to receive video pixels at VLC's presentation time, then publishes complete GPU-shared pairs to the existing output. Audio remains with VLC. The VLC window and controls are not part of the movie pixels. CPU decoding and copies can limit high-resolution playback; this first implementation provides SDR pixels and does not claim faithful HDR movie output. External subtitle composition, disc/MVC decoding, other stereo formats and movie playback through the glasses remain unverified. Ordinary 2D video requires the separate AI desktop conversion while playing in VLC.
 
+## Screen sharing and recording (2D stream view)
+
+Frame-sequential 3D cannot be captured. The output alternates left and right once
+per refresh, and a black-frame sequence adds dark refreshes between them; a
+recorder sampling that at 30 or 60 frames a second lands on a different eye each
+time. That is what a viewer sees as the picture jumping sideways and flashing.
+Only the glasses resolve the sequence, because only they are synchronized to it.
+No encoder setting fixes this.
+
+So the recorder gets its own picture. Under **Input**, tick **2D stream view**.
+The presenter then draws one eye, at up to 60 pictures a second, into a second
+window, without the stereo band, the eye shift, the crosstalk subtraction or the
+brightness gain - those exist to make an alternating image look right through the
+glasses and look wrong on a flat capture. Two options sit beside it:
+
+- **Cover the display** (default): the stream view covers the output display
+  underneath the 3D output, and the 3D output is removed from screen capture the
+  same way the whole-screen conversion already removes it. Share **the screen**
+  in Discord or OBS. The mirror stays between the stereo output and the game
+  when the game gains focus. A direct-eye provider may stop presenting its own
+  window while covered; a window-capture source continues drawing its packed eyes.
+- **Cover the display** off: the stream view is an ordinary window you can move
+  and resize. Share the window named **Vision Restoration stream view (2D)**.
+
+Built 2026-09-22 and not yet watched from the receiving end of a call. The
+capture exclusion that **Cover the display** relies on is the same one the
+whole-screen conversion already uses successfully, but whether a covered window
+keeps feeding a screen capture has not been confirmed here. If a screen share
+comes out frozen or black, untick **Cover the display** and share the stream
+view window instead; window capture does not depend on that behaviour.
+
+**Right eye** streams the other eye instead. The glasses keep the full stereo
+sequence in every case; nothing about the calibration changes.
+
+The stream view is drawn by the presenter, from the stereo pair it is already
+holding, when the stream swap chain has room. Its Present call requests
+`DXGI_PRESENT_DO_NOT_WAIT`; a busy stream frame is skipped instead of waiting
+for the compositor. Drawing and resizing still cost GPU time. If it fails it
+turns itself off and reports why; the 3D output continues.
+
+Window-captured games now use the click-through, nonactivating game overlay in
+fullscreen, including after F11 returns from the embedded preview. Earlier
+builds only used that path for direct-eye providers, so captured games could
+fight an activating fullscreen window and bypass overlay compatibility.
+The session log records `passthrough` and `gameOverlay` to identify that path.
+Switching focus to Discord, another monitor or another application leaves both
+output windows visible. Minimizing the game holds the last captured pair and
+output position; it does not hide the stereo or stream window. Stop output with
+the existing Stop control or shortcut.
+
+For repeatable diagnosis of an already running SBS game, start the app with
+`--capture-pid <game PID> --start-fullscreen --stream-view`. Add `--stream-window`
+for the separate capture window. These options do not launch or modify the game.
+
+The whole-screen AI depth conversion needs none of this: it already hides its
+output from capture, so a recorder sees the plain 2D desktop.
+
 ## Whole screen in 3D (AI depth)
 
 > Built 2026-09-15 and checked only on the desktop without glasses: the capture, the depth
@@ -150,6 +209,29 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
   uses the same click-through desktop overlay as **Start screen 3D**, including after
   returning from the windowed preview or selecting AI desktop in the fullscreen menu.
   **Home** opens the controls; hide them again to use the desktop underneath.
+- Fullscreen output is fully opaque. The earlier translucent compatibility
+  setting has been removed: it exposed the game underneath black slots and added
+  compositor work. Mouse, keyboard and controller input still go to the game.
+- Fullscreen output repairs its window order when a foreground app overlaps it
+  or another fullscreen window covers it, without taking focus or repeatedly raising the
+  controls. This applies to AI desktop, game overlays and other fullscreen output.
+  Repeated game activation does not stop output. The overlay stays on the
+  selected display when the game moves, loses focus, minimizes or closes.
+  A separate overlay cannot guarantee display ownership over true exclusive
+  fullscreen; use borderless/windowed mode. Window-order recovery does not fix
+  missed GPU presentation deadlines. `reports/session.log` distinguishes
+  `windowOrderRepairs`/`occluded` from timing `misses`/`blackOnImage`;
+  `tools/Test-OverlayFocus.ps1` records actual foreground/overlapping HWNDs for
+  30 seconds without moving windows or collecting their titles or contents.
+  For true exclusive fullscreen, use borderless/windowed mode so that Windows
+  can compose the overlay ([Microsoft's explanation](https://devblogs.microsoft.com/directx/demystifying-full-screen-optimizations/)).
+- Timing warnings do not switch stereo to 2D or stop output. The user decides
+  when to pause, stop or disable 3D. The overlay remains on top and passes input
+  through when focus changes or the presenter repairs a missed deadline.
+- Stereo presentation reserves about 25 ms of queued frames, scaled to the
+  display refresh rate. At 240 Hz it queues six frames, with matching shutter
+  commands, to absorb brief presentation stalls that exhausted the old
+  three-frame queue. Capture rate and saved calibration remain unchanged.
 - For **60 stereo frames per second**, use **240 Hz with Left / Black / Right / Black**
   or **120 Hz with Left / Right**. Desktop conversion follows that stereo frame rate;
   AI depth updates run independently and can be slower without limiting desktop motion

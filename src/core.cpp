@@ -9,18 +9,20 @@
 #include <windows.h>
 
 namespace vision {
+unsigned presentationQueueDepth(double refresh){
+    if(!std::isfinite(refresh)||refresh<=0)throw std::runtime_error("Invalid presentation refresh rate.");
+    return unsigned(std::clamp(std::ceil(refresh*.025),3.,double(maxPresentationQueueDepth)));
+}
 uint64_t refreshForPresent(uint32_t present,uint32_t observedPresent,uint64_t observedRefresh) {
     return observedRefresh+uint32_t(present-observedPresent);
 }
 void PresentRefreshAnchor::observe(uint32_t id,uint64_t displayedRefresh,bool composed){
     if(valid&&id==present)return;
-    if(!valid||!composed){present=id;refresh=displayedRefresh;valid=true;confirmations=0;return;}
-    const uint64_t predicted=refreshForPresent(id,present,refresh);
-    const int64_t correction=int64_t(displayedRefresh)-int64_t(predicted);
-    present=id;refresh=predicted;
-    if(correction==0){confirmations=0;return;}
-    if(correction!=candidate){candidate=correction;confirmations=1;return;}
-    if(++confirmations>=2){refresh=displayedRefresh;confirmations=0;}
+    // PresentRefreshCount is the refresh that actually displayed this present,
+    // including under DWM. Filtering a real one-refresh delay keeps the old
+    // eye/black parity and perpetuates flashes during successive missed slots.
+    // https://learn.microsoft.com/windows/win32/api/dxgi/ns-dxgi-dxgi_frame_statistics
+    (void)composed;present=id;refresh=displayedRefresh;valid=true;
 }
 uint32_t presentForRefresh(uint64_t refresh,uint32_t observedPresent,uint64_t observedRefresh) {
     return observedPresent+uint32_t(refresh-observedRefresh);
@@ -530,6 +532,33 @@ bool TimingTracker::observe(uint64_t n,double t) {
     history_.emplace_back(n,t);if(history_.size()>window)history_.erase(history_.begin());
     lastRefresh=n;++samples;refit();if(!period)epoch=t;
     return samples>=8 && period>0;
+}
+bool TimingTracker::observeContinuous(uint64_t n,double t) {
+    if(!std::isfinite(t)||t<0)return false;
+    if(samples<8)return observe(n,t);
+    if(n==lastRefresh)return false;
+    if(n>lastRefresh){
+        const double sample=(t-epoch)/double(n-lastRefresh);
+        if(sample>=.002&&sample<=.05&&std::abs(sample-period)<=period*.08&&std::abs(t-predict(n))<=period*.25){
+            candidate_.clear();return observe(n,t);
+        }
+    }
+    // Do not feed a one-off timestamp into the fit, blank the next eight output
+    // frames, or leave the glasses free-running while that fit starts over.
+    // Repeated reports of the same sample cannot vote a new clock into place.
+    if(!candidate_.empty()&&candidate_.back().first==n)return false;
+    ++rejectedSamples;
+    candidate_.emplace_back(n,t);
+    TimingTracker candidate;
+    for(const auto& [refresh,time]:candidate_)candidate.observe(refresh,time);
+    if(candidate.samples!=candidate_.size()){
+        candidate_.clear();candidate_.emplace_back(n,t);return false;
+    }
+    if(candidate.samples<8)return false;
+    // A genuine phase/rate/counter change gets a complete new fit, with no
+    // intermediate loss of lock and no mixing of timestamps from two clocks.
+    candidate.rejectedSamples=rejectedSamples;candidate.corrections=corrections+1;
+    *this=std::move(candidate);return true;
 }
 double TimingTracker::predict(uint64_t n)const{return epoch+(double(n)-double(lastRefresh))*period;}
 }

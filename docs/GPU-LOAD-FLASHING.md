@@ -1,5 +1,98 @@
 # GPU-load flashing
 
+## Refresh-scaled presentation queue (2026-09-22)
+
+An on-display diagnostic through the production presenter reproduced the timing
+fault while showing only a steady captured eye, with no physical emitter
+connection. Window ordering remained stable and clicks reached the foreground
+application. At 3840x2160 HDR / 239.98 Hz, the old three-frame queue recorded
+800 delayed-present reports over 25 seconds. CPU drawing took only 0.006 ms at
+the median; `Present` sometimes blocked for over 10 ms after the frame wait.
+Three queued refreshes provided only 12.5 ms of buffering.
+
+With six queued frames and seven back buffers, the same diagnostic recorded
+zero timing misses in 5,997 presentations over 25 seconds. With the stream
+mirror enabled, it recorded zero misses in 10,773 presentations over 45 seconds.
+Sources: `reports/steady-probe-q3.csv`, `reports/steady-probe-q6.csv`,
+`reports/steady-probe-q6-stream.csv`, and their `.csv.txt` summaries.
+These are present-statistics tests with a steady picture, not optical
+measurements through the glasses.
+
+The final production-policy run with streaming and simulated shutter commands
+completed 10,761 reported presentations and 5,387 simulated commands over 45
+seconds. There were no late display frames or late commands. Its one nonzero
+refresh delta was an early report during startup at 0.0703 s (present 13); all
+10,702 other distinct reported presents matched their expected refresh.
+See `reports/steady-probe-production-stream.csv` and its `.csv.txt` summary.
+Core timing, fullscreen window order, actual capture routing, stream settings,
+GPU transport, and the expanded simulated command queue tests pass.
+
+The production presenter now reserves approximately 25 ms using the actual
+display refresh: three frames at 120 Hz, six at 240 Hz, bounded at eight.
+Swap-chain buffer count grows with that queue. The shutter-command FIFO also
+holds the maximum queued eye frames plus two spare entries; its old four-entry
+limit would discard valid commands after increasing presentation depth.
+Eye selection and shutter deadlines still use the same display-refresh anchor.
+At 240 Hz this adds approximately 12.5 ms of buffering compared with the old
+three-frame queue; it does not lower capture rate or change calibration.
+
+`vision_present_probe PID queue-depth seconds report.csv [stream] [simulate]`
+repeats the bounded steady-image diagnostic. Queue depth `0` uses the production
+policy. `simulate` exercises command scheduling with the simulated emitter;
+the tool never connects to physical emitter hardware. It keeps input focus
+with the application and writes per-frame timings after the run so disk writes
+do not interrupt presentation.
+
+## Focus loss and composed recovery (2026-09-22)
+
+The window-capture overlay still flashed on the monitor and stream after the
+capture routing repair. The session recorded `passthrough=1 gameOverlay=1`,
+stable composed presentation and zero window-order repairs, but hundreds of
+sampled black frames on image slots. The user also reported disappearance when
+unfocused. The UI explicitly hid both the stereo window and mirror whenever
+foreground belonged to another process, including Discord or a transient null
+foreground window.
+
+Focus no longer controls output visibility. Fullscreen output covers the selected
+display independently of the game's position, focus or minimized state; hidden
+or minimized sources retain the last captured pair. Both stereo and the display
+stream mirror pass clicks through without activation. Repeated game activation
+repairs their order instead of stopping output after three competing raises.
+The composed timing path now
+uses each actual `PresentRefreshCount` immediately, matching direct flip;
+the previous two-report filter delayed real missed-refresh recovery. This
+supersedes the composed-filter description in the September 18 entry below.
+
+Fullscreen overlays are fully opaque (`alpha=255`). The compatibility setting
+that used alpha 254 leaked the packed game image through black slots and forced
+composition. Stream presents request `DO_NOT_WAIT`, and hidden controls no longer
+draw or present their own swap chain alongside the stereo output.
+
+Live read-only verification with Crimson Desert at 3840x2160 found the game in
+the foreground, the stereo window visible/topmost with no covering windows, and
+Windows hit tests at 10%, 50% and 90% of the screen all targeting the game
+(`reports/overlay-focus-20260922-220850.log`). Earlier focus transitions to the
+shell and back also left output visible. Presentation timing misses still
+occurred with the game and stream running; window-order success does not prove
+that GPU-load flashing is resolved.
+
+The user confirmed continued flashing and eye discomfort. Live 3D was stopped
+immediately. A stereo-only trace (stream mirror disabled) still recorded missed
+deadlines while the overlay stayed above the focused application, so the mirror
+is not the sole cause. This is an unresolved app presentation fault, not a
+game-specific compatibility finding.
+
+An interim automatic 2D fallback was removed at the user's explicit direction:
+only the user decides when to disable 3D. Timing misses remain diagnostics and
+update the refresh anchor without demoting running stereo to 2D. The
+refresh-scaled queue repair above remains in place. The steady-image diagnostic
+is an explicitly launched test tool, never an automatic playback mode.
+
+Regression coverage includes focus/minimize/hidden-source window placement,
+the real fullscreen capture/F11 route, repeated composed misses, and actual
+stream shader pixels through L/B/R/B cycles. None of these tests measures the
+receiving Discord stream or proves that GPU-load flashing is fully resolved.
+
 ## Game stereo: 32 pairs/s cap and the presenting game window (2026-09-20)
 
 Psychonauts 2 through the geo-11 direct-eye runtime, 3840x2160 HDR / 240 Hz,
@@ -140,3 +233,40 @@ is part of this repair.
   Installed SHA256: `B28B2326610E406EA9330A75A0C2EAC4DF671E0FD83F347EA20A76FECFC7E2C2`.
   The original app process stayed running with the live opacity adjustment applied.
 - User confirmation of visible flashing, optical alignment and controls is pending.
+
+## AI desktop clock interruptions (2026-09-22)
+
+The user reported moving black bands in the glasses and repeated manual resyncs
+after switching to AI desktop. The running app used HDR 3840x2160 at about
+239.982 Hz, L/B/R/B, and six queued presentation frames. A pre-change log snapshot
+is in `reports/ai-desktop-before-clock-fix.log`. It records both presentation
+misses and clock reacquisitions. In one interval the clock reacquisition count
+increased with no increase in presentation misses or composition transitions.
+This is evidence of an additional clock-recovery problem; it is not an optical
+measurement or proof that every reported black band has the same cause.
+
+Two recovery paths inserted extra black frames: one unusual timestamp discarded
+the fitted refresh clock, and `DXGI_ERROR_FRAME_STATISTICS_DISJOINT` suspended the
+emitter and restarted a sixteen-frame acquisition blank. The presenter now keeps
+the current clock across an isolated timestamp outlier or unavailable statistics.
+Eight distinct, consistent samples must establish a replacement clock. The
+presentation anchor follows only statistics in the accepted clock's counter
+domain. Explicit user resync still clears timing state.
+
+An anchor correction could also enqueue the same refresh twice with slightly
+different predicted times. Emitter submission now rejects repeated/backward
+deadlines and spacing below half an eye period, including commands already taken
+out of the FIFO. This prevents duplicate commands from perturbing the firmware's
+period lock. A new explicit synchronization generation clears that history.
+
+Diagnostics now distinguish `clockOutliers`, `clockCorrections`, `statsDisjoints`,
+and emitter `repeated` commands from ordinary misses. No automatic 2D fallback,
+calibration adjustment, emitter firmware change, or AI quality reduction was added.
+
+Verification: core, GPU texture integration (simulated emitter), fullscreen window
+ordering, and stream-picture tests passed. The clock test covers three minutes of
+synthetic 239.982 Hz timing with recurring outliers, duplicate reports, confirmed
+phase/rate/counter changes, and missing-statistics intervals. Queue tests cover
+duplicate deadlines before and after dispatch and explicit resync. These tests do
+not establish optical stability through physical glasses. The current live app
+was left running; the new executable takes effect on the user's next relaunch.

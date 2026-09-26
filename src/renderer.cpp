@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "stream_view.h"
 #include "stereo_blit_shader.h"
 #include "stereo_shader_bytecode.h"
 #include "window_worker.h"
@@ -17,17 +18,28 @@
 
 namespace vision {
 Surface::~Surface(){target.Reset();swap.Reset();if(waitable)CloseHandle(waitable);}
-void Surface::create(HWND window,const LUID* luid,bool useHDR){
+void Surface::create(HWND window,const LUID* luid,bool useHDR,unsigned latency){
     ComPtr<IDXGIFactory4> factory;check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)),"DXGI factory");ComPtr<IDXGIAdapter> adapter;
     if(luid)check(factory->EnumAdapterByLuid(*luid,IID_PPV_ARGS(&adapter)),"Select display GPU");
     check(D3D11CreateDevice(adapter.Get(),adapter?D3D_DRIVER_TYPE_UNKNOWN:D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"Create D3D11 device");
-    RECT r{};GetClientRect(window,&r);width=std::max(1L,r.right);height=std::max(1L,r.bottom);hdr=useHDR;
-    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=width;desc.Height=height;desc.Format=hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=4;desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-    ComPtr<IDXGISwapChain1> chain;check(factory->CreateSwapChainForHwnd(device.Get(),window,&desc,nullptr,nullptr,&chain),"Create flip swap chain");check(chain.As(&swap),"Waitable swap chain");// Three frames queued ahead. With a latency of 1 every frame was rendered at the last moment, so any
-    // stall of a few milliseconds while the game held focus missed a refresh; in black frame insertion
-    // that put black where a picture belonged (the black flashing, 2026-09-14). The queue absorbs stalls
-    // of up to two refreshes; the display kernel still flips one image per refresh.
-    check(swap->SetMaximumFrameLatency(3),"Set frame latency");waitable=swap->GetFrameLatencyWaitableObject();if(!waitable)throw std::runtime_error("No frame latency wait handle.");
+    hdr=useHDR;
+    // Stereo supplies a refresh-based latency so a higher display rate does not
+    // silently halve the time available to survive GPU/Present stalls.
+    makeSwapChain(factory.Get(),window,latency);
+}
+void Surface::attach(ID3D11Device* existing,ID3D11DeviceContext* existingContext,HWND window,unsigned latency){
+    device=existing;context=existingContext;hdr=false;
+    ComPtr<IDXGIDevice> dxgi;check(device.As(&dxgi),"Stream view DXGI device");
+    ComPtr<IDXGIAdapter> adapter;check(dxgi->GetAdapter(&adapter),"Stream view adapter");
+    ComPtr<IDXGIFactory2> factory;check(adapter->GetParent(IID_PPV_ARGS(&factory)),"Stream view DXGI factory");
+    makeSwapChain(factory.Get(),window,latency);
+}
+void Surface::makeSwapChain(IDXGIFactory2* factory,HWND window,unsigned latency){
+    if(latency<1||latency>maxPresentationQueueDepth)throw std::runtime_error("Presentation queue depth must be between 1 and 8.");
+    RECT r{};GetClientRect(window,&r);width=std::max(1L,r.right);height=std::max(1L,r.bottom);
+    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=width;desc.Height=height;desc.Format=hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=std::max(4u,latency+1);desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    ComPtr<IDXGISwapChain1> chain;check(factory->CreateSwapChainForHwnd(device.Get(),window,&desc,nullptr,nullptr,&chain),"Create flip swap chain");check(chain.As(&swap),"Waitable swap chain");
+    check(swap->SetMaximumFrameLatency(latency),"Set frame latency");waitable=swap->GetFrameLatencyWaitableObject();if(!waitable)throw std::runtime_error("No frame latency wait handle.");
     factory->MakeWindowAssociation(window,DXGI_MWA_NO_ALT_ENTER);
     ComPtr<IDXGISwapChain3> color;check(swap.As(&color),"Swap chain color space");auto space=hdr?DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;UINT support=0;check(color->CheckColorSpaceSupport(space,&support),"Check HDR color space");if(!(support&DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))throw std::runtime_error("Selected output does not support requested color space.");check(color->SetColorSpace1(space),"Set presentation color space");
     ComPtr<ID3D11Texture2D> buffer;check(swap->GetBuffer(0,IID_PPV_ARGS(&buffer)),"Swap buffer");check(device->CreateRenderTargetView(buffer.Get(),nullptr,&target),"Swap render target");
@@ -100,7 +112,8 @@ static std::string raiseGpuSchedulingPriority(){
         if(D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(),l.level)==0)return l.name;
     return "normal (kernel refused a higher class)";
 }
-void Presenter::start(HWND window,const Display& d,const Settings& s,bool preview,int pattern){stop();validate(s);if(s.hdr && !d.hdrEnabled)throw std::runtime_error("Enable HDR for this display in Windows before starting HDR output.");{std::lock_guard l(mutex_);settings_=s;pattern_=pattern;status_={};status_.running=true;status_.preview=preview;paused_=false;++revision_;}emitter_.configure(s);worker_=std::jthread([this,window,d,preview](std::stop_token stop){run(stop,window,d,preview);});}
+void Presenter::start(HWND window,const Display& d,const Settings& s,bool preview,int pattern){start(window,d,s,preview,pattern,Diagnostics{});}
+void Presenter::start(HWND window,const Display& d,const Settings& s,bool preview,int pattern,const Diagnostics& diagnostics){stop();validate(s);if(s.hdr && !d.hdrEnabled)throw std::runtime_error("Enable HDR for this display in Windows before starting HDR output.");{std::lock_guard l(mutex_);settings_=s;pattern_=pattern;status_={};status_.running=true;status_.preview=preview;paused_=false;++revision_;}emitter_.configure(s);worker_=std::jthread([this,window,d,preview,diagnostics](std::stop_token stop){run(stop,window,d,preview,diagnostics);});}
 void Presenter::stop(){stopWindowWorker(worker_);emitter_.suspend();std::lock_guard l(mutex_);status_.running=false;status_.locked=false;}
 void Presenter::configure(const Settings& s,int pattern){validate(s);emitter_.configure(s);std::lock_guard l(mutex_);
     // Phase, duration, eye swap, pattern and scene depth are read every frame and must apply live.
@@ -112,8 +125,17 @@ void Presenter::pause(bool p){std::lock_guard l(mutex_);if(paused_==p)return;pau
 // only way the viewer re-locks it, so it can be reached from a control the game's focus does not steal.
 void Presenter::resync(){std::lock_guard l(mutex_);resyncRequested_=true;}
 void Presenter::showPhase(bool on){std::lock_guard l(mutex_);overlay_=on;}
+void Presenter::streamTo(HWND window,bool rightEye){
+    std::unique_lock l(mutex_);streamWindow_=window;streamRightEye_=rightEye;status_.streamMessage.clear();
+    if(window)return;
+    status_.streaming=false;
+    // Wait for the presenter to drop the swap chain before the caller destroys the
+    // window. Presenting into a destroyed HWND is undefined; the wait bounds itself
+    // so a stalled presenter can never hang the user interface.
+    streamIdle_.wait_for(l,std::chrono::milliseconds(500),[this]{return !streamOpen_;});
+}
 RenderStatus Presenter::status()const{std::lock_guard l(mutex_);return status_;}
-void Presenter::run(std::stop_token stop,HWND window,Display display,bool preview){
+void Presenter::run(std::stop_token stop,HWND window,Display display,bool preview,Diagnostics diagnostics){
     DWORD task=0;HANDLE mmcss=AvSetMmThreadCharacteristicsW(L"Games",&task);
     // The output window normally sits unfocused behind the game (the pad follows focus). Windows 11
     // throttles background processes (EcoQoS, ignored timer resolution), which made the presenter and
@@ -128,22 +150,30 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
         // showing zero presents also shows where the output got stuck.
         auto stage=[&](const char* what){std::lock_guard l(mutex_);status_.message=what;};
         stage("Creating the output surface");
-        Settings s;{std::lock_guard l(mutex_);s=settings_;}Surface surface;surface.create(window,&display.adapterLuid,s.hdr);stage("Creating the output shaders");DrawState draw;draw.init(surface.device.Get());stage("Waiting for the first frame slot");
+        const unsigned queueDepth=diagnostics.queueDepth?diagnostics.queueDepth:preview?3:presentationQueueDepth(display.refresh);
+        Settings s;{std::lock_guard l(mutex_);s=settings_;}Surface surface;surface.create(window,&display.adapterLuid,s.hdr,queueDepth);stage("Creating the output shaders");DrawState draw;draw.init(surface.device.Get());stage("Waiting for the first frame slot");
         {ComPtr<IDXGIDevice> dxgi;if(SUCCEEDED(surface.device.As(&dxgi)))dxgi->SetGPUThreadPriority(7);}
         struct PresentRecord {UINT id;uint64_t expected;Slot slot;bool muted;};std::deque<PresentRecord> records;
         TimingTracker clock;uint64_t slotIndex=0,revision=0,lastUsbLate=0;UINT lastObserved=0,lastRefresh=0,lastSubmitted=0;unsigned blank=16;unsigned slipWindow=0;double slipWindowStart=0;
-        // DWM's wobble filter must not delay direct-flip recovery: with repeated
-        // slips the old offset could remain stale, scheduling black into image slots.
+        // Both DWM and direct flip report the actual displayed refresh. Recover
+        // from a slip immediately, without retaining a stale eye/black parity.
         PresentRefreshAnchor anchor;
         // PresentRefreshCount already identifies the refresh the image reached.
         // Composition mode is diagnostic information, not an extra display delay.
         ComPtr<IDXGISwapChainMedia> media;surface.swap.As(&media);bool composed=false;
-        RenderStatus local;local.running=true;local.preview=preview;local.gpuPriority=gpuPriority;local.message=preview?"PREVIEW - side-by-side, no optical validation":"Acquiring presentation timing";
+        RenderStatus local;local.running=true;local.preview=preview;local.gpuPriority=gpuPriority;local.queueDepth=queueDepth;local.message=preview?"PREVIEW - side-by-side, no optical validation":"Acquiring presentation timing";
         double begin=qpc(),last=begin,pairTime=0,lastPublish=0,lockedSince=begin;
         std::deque<double> recentIntervals;double intervalSum=0,intervalSumSq=0;
+        // 2D stream view (stream_view.h): a second swap chain on this same device and
+        // context, so it draws from the stereo pair this thread already holds open.
+        std::unique_ptr<Surface> stream;HWND streamOpened=nullptr;double lastStream=0;
+        struct TraceFrame {double time,wait,source,draw,present,stats,stream;UINT submitted,expected,observed,refresh,sync;HRESULT result;bool composed;};
+        std::vector<TraceFrame> trace;if(!diagnostics.trace.empty())trace.reserve(30000);
         while(!stop.stop_requested() && IsWindow(window)){
+            const double waitBegin=qpc();
             DWORD wait=WaitForSingleObject(surface.waitable,50);if(wait==WAIT_TIMEOUT){if(!local.presents)stage("Waiting for a frame slot; the swap chain is not turning over");continue;}if(wait!=WAIT_OBJECT_0)throw std::runtime_error("Presentation wait failed.");
-            bool paused,overlay,manualResync;int pattern;uint64_t rev;{std::lock_guard l(mutex_);s=settings_;paused=paused_;pattern=pattern_;rev=revision_;overlay=overlay_;manualResync=resyncRequested_;resyncRequested_=false;}
+            const double waitEnd=qpc();
+            bool paused,overlay,manualResync,streamRight;int pattern;uint64_t rev;HWND streamWindow;{std::lock_guard l(mutex_);s=settings_;paused=paused_;pattern=pattern_;rev=revision_;overlay=overlay_;manualResync=resyncRequested_;resyncRequested_=false;streamWindow=streamWindow_;streamRight=streamRightEye_;}
             if(rev!=revision){revision=rev;begin=qpc();lockedSince=begin;local.elapsed=0;local.timingPassed=false;blank=16;slotIndex=0;clock.reset();anchor.reset();records.clear();lastObserved=lastRefresh=lastSubmitted=0;emitter_.suspend();}
             // Change the actual buffer precision and color space with the HDR
             // setting, keeping the output window and image source in place.
@@ -157,31 +187,32 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             auto slot=sequenceSlot(s.sequence,slotSeq,false);
             auto emitterStatus=emitter_.status();auto usbState=emitterStatus.state;
             auto resync=[&]{emitter_.suspend();blank=16;slotIndex=0;clock.reset();anchor.reset();records.clear();lastObserved=lastRefresh=0;local.resyncs++;local.lastResyncSec=qpc()-begin;local.timingPassed=false;};
-            if(manualResync)resync(); // the viewer asked for it; nothing else here restarts synchronization
-            // LCD aperture reacquires after a slip; its scheduler cannot free-run.
-            // The existing general path rides through a slipped frame, short lead or late USB command: the eye
-            // sequence is anchored to the refresh counter and the emitter free-runs one period without
-            // a command (its own eye bit still toggles at the boundary), so only that refresh is wrong
-            // and the next present-to-refresh mapping corrects the following frame. Slips never
-            // resynchronize: a resync blanks 16 frames and re-locks the emitter, and with a game
-            // loading the GPU (2026-09-14: a 4K game captured as the source slipped 14 to 23
-            // refreshes a second) the old four-slips-per-second rule chained resyncs three to six
-            // times a second, which the viewer saw as the glasses going black for seconds. Slips are
-            // counted per second and reported instead.
-            auto slip=[&](unsigned count){local.misses+=count;slipWindow+=count;if(s.lcd.enabled&&emitterStatus.scheduled)resync();};
+            if(manualResync)resync();
+            // Timing misses update diagnostics and the refresh anchor. Only the
+            // user selects pause, stop or 2D; never demote running stereo here.
+            auto slip=[&](unsigned count){
+                local.misses+=count;slipWindow+=count;
+                if(s.lcd.enabled&&emitterStatus.scheduled)resync();
+            };
             if(!preview&&emitterStatus.late>lastUsbLate)slip(unsigned(emitterStatus.late-lastUsbLate));
             lastUsbLate=emitterStatus.late;
             bool emitterAvailable=usbState==EmitterState::Ready||usbState==EmitterState::Running||usbState==EmitterState::Simulated;
-            bool mute=paused || (!preview && (blank>0 || clock.samples<8 || !emitterAvailable));Eye eye=mute?Eye::Black:slot.eye;
+            const bool steady=diagnostics.steadyTimingProbe;
+            bool mute=paused || (!preview&&!steady&&(blank>0||clock.samples<8||!emitterAvailable));
+            Eye eye=mute?Eye::Black:steady?streamViewEye(s,false):slot.eye;
             // Do not consume ordered source pairs during pause or acquisition
             // blanking: no eye image is being submitted in those slots.
+            const double sourceBegin=qpc();
             if(slot.pairBoundary&&!mute){auto next=source_.forPresentation();if(draw.accept(surface.device.Get(),next))source_.presented(next);pairTime=qpc()-begin;}
-            surface.bind();draw.draw(surface.context.Get(),surface.width,surface.height,s,eye,preview && !paused,pattern,pairTime,overlay&&!mute,!mute&&slot.eye==Eye::Black,slotIndex);
+            const double sourceEnd=qpc();
+            surface.bind();draw.draw(surface.context.Get(),surface.width,surface.height,steady?steadyViewSettings(s):s,eye,preview&&!paused,pattern,pairTime,overlay&&!mute&&!steady,!mute&&!steady&&slot.eye==Eye::Black,slotIndex);
+            const double drawEnd=qpc();
             // Predictive trigger for every backend: the eye command is timed from the predicted
             // vblank of the refresh this present will land on, not from retrospective statistics.
             // Retrospective triggering shifted by a frame whenever DWM switched between composition
             // and direct flip, which showed up as sudden crosstalk seconds after a clean start.
-            if(!preview&&!mute&&slot.trigger&&lastObserved&&clock.samples>=8&&blank==0) {
+            const bool simulatedProbe=diagnostics.steadyTimingProbe&&diagnostics.simulateProbeTriggers&&usbState==EmitterState::Simulated;
+            if(!preview&&(!steady||simulatedProbe)&&!mute&&slot.trigger&&lastObserved&&clock.samples>=8&&blank==0) {
                 // Predict the next present's refresh before Present can block.
                 // Actual refresh statistics below still detect a missed prediction.
                 UINT previous=0;check(surface.swap->GetLastPresentCount(&previous),"Predict present identifier");
@@ -190,8 +221,10 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
                 // NVIDIA through its X delay timer and RP2040 through its scheduled open time.
                 const double target=clock.predict(nextRefresh);
                 {double leadMs=(target-qpc())*1000;local.leadBins[leadMs<0?0:leadMs<2?1:leadMs<4?2:leadMs<6?3:leadMs<8?4:5]++;}
-                if(target-qpc()<.0005) {
-                    // Too late to command this refresh: the emitter free-runs one period.
+                const double lead=target-qpc();
+                if(lead<.0005||lead>clock.period*(maxPresentationQueueDepth+4)) {
+                    // A stale/past target or an unconfirmed counter restart is
+                    // not a usable deadline. Leave the firmware's cadence alone.
                     slip(1);
                     if(s.lcd.enabled&&emitterStatus.scheduled){mute=true;eye=Eye::Black;draw.draw(surface.context.Get(),surface.width,surface.height,s,eye,false,pattern,pairTime,false,false,slotIndex);}
                 } else {
@@ -199,7 +232,9 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
                     emitter_.submit(commandEye,target,clock.period*1e6);
                 }
             }
+            const double presentBegin=qpc();
             UINT id=0;HRESULT h=surface.swap->Present(1,0);
+            const double presentEnd=qpc();
             // Occlusion is a normal, expected state, not a fault: playing a side-by-side game means the
             // game window has focus and covers the output window, and a gamepad only reaches the focused
             // window. Suspending the emitter and blanking 16 frames here re-ran on every occluded present,
@@ -217,12 +252,17 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
                 if(media){DXGI_FRAME_STATISTICS_MEDIA fm{};if(SUCCEEDED(media->GetFrameStatisticsMedia(&fm))){bool c=fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED||fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE;directFlipReport=!c;if(c!=composed){composed=c;local.modeChanges++;modeChanged=true;}local.composed=composed;}}
                 LARGE_INTEGER freq;QueryPerformanceFrequency(&freq);double sync=double(stats.SyncQPCTime.QuadPart)/double(freq.QuadPart);
                 const bool hadClock=clock.samples>=8;
-                clock.observe(stats.SyncRefreshCount,sync);
+                const auto outliers=clock.rejectedSamples,corrections=clock.corrections;
+                clock.observeContinuous(stats.SyncRefreshCount,sync);
+                local.clockOutliers+=clock.rejectedSamples-outliers;
+                local.clockCorrections+=clock.corrections-corrections;
                 if(hadClock&&clock.samples<8)++local.clockReacquires;
                 bool mismatch=false;
-                if(stats.PresentCount!=lastObserved){
+                // Keep the present anchor and timestamp clock in the same counter
+                // domain while a changed/discontinuous report is being checked.
+                if(stats.PresentCount!=lastObserved&&clock.lastRefresh==stats.SyncRefreshCount){
                     auto record=std::find_if(records.begin(),records.end(),[&](auto& r){return r.id==stats.PresentCount;});
-                    mismatch=record!=records.end() && record->expected && record->expected!=stats.PresentRefreshCount;
+                    mismatch=record!=records.end()&&!record->muted&&record->expected&&record->expected!=stats.PresentRefreshCount;
                     if(record!=records.end()&&!record->muted&&record->slot.eye==Eye::Black&&sequenceSlot(s.sequence,stats.PresentRefreshCount,false).eye!=Eye::Black)++local.blackOnImage;
                     anchor.observe(stats.PresentCount,stats.PresentRefreshCount,!directFlipReport);
                     lastObserved=anchor.present;lastRefresh=UINT(anchor.refresh);
@@ -231,8 +271,14 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
                 // Already queued frames retain their old eye/black slot, so a slip
                 // can affect several refreshes; it is not necessarily a single wrong eye.
                 if(!preview&&blank==0&&mismatch)slip(1);(void)modeChanged;
-            }else if(sh==DXGI_ERROR_FRAME_STATISTICS_DISJOINT)resync();
-            else if(!preview){local.message="Presentation statistics unavailable; stereo triggers disabled";emitter_.suspend();blank=16;}
+            }else if(sh==DXGI_ERROR_FRAME_STATISTICS_DISJOINT){
+                // DXGI can restart its statistics across desktop presentation
+                // changes. It is not a request to disable/reinitialize the IR
+                // emitter or insert sixteen black frames. Keep the last clock
+                // and anchor until subsequent samples establish their successor.
+                ++local.statsDisjoints;
+            }
+            else if(!preview){local.message="Presentation statistics unavailable; reacquiring stereo timing";}
             if(blank>0){--blank;slotIndex=0;}else ++slotIndex;
             double now=qpc();if(!slipWindowStart)slipWindowStart=now;if(now-slipWindowStart>=1){local.slipsLastSecond=slipWindow;slipWindow=0;slipWindowStart=now;}local.lastIntervalMs=(now-last)*1000;local.maxIntervalMs=std::max(local.maxIntervalMs,local.lastIntervalMs);last=now;local.presents++;local.elapsed=now-begin;local.measuredHz=clock.period?1/clock.period:0;local.sourcePair=draw.active?draw.active->pairId:0;local.locked=!preview && !paused && emitterAvailable && blank==0 && clock.samples>=8;
             {double ms=local.lastIntervalMs;recentIntervals.push_back(ms);intervalSum+=ms;intervalSumSq+=ms*ms;if(recentIntervals.size()>256){double old=recentIntervals.front();recentIntervals.pop_front();intervalSum-=old;intervalSumSq-=old*old;}
@@ -243,16 +289,55 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             if(preview)local.message="PREVIEW - both eyes side-by-side; no emitter commands";
             else if(paused)local.message="Paused - output black, emitter suspended";
             else if(local.locked)local.message=std::string("Presentation clock acquired (")+(composed?"DWM composed":"direct flip")+") - optical sync still requires your confirmation"+(local.slipsLastSecond?" - "+std::to_string(local.slipsLastSecond)+" timing misses in the last second; late black frames can cause visible flashes":"");
+            // The 2D stream view is drawn last, from the pair this thread already holds
+            // open above, and only when its swap chain reports a free buffer.
+            // Present must ALSO request DO_NOT_WAIT: a free frame-latency slot
+            // does not guarantee that the GPU/compositor can accept a present.
+            // Skip a busy stream frame instead of delaying the next stereo slot.
+            // Any failure drops the stream view and leaves the stereo output
+            // untouched - a broken screen share must not cost the viewer their 3D.
+            // A message left by a failure stays until a new window is asked for: it is the
+            // only place the viewer learns why their screen share went away.
+            if(streamWindow!=streamOpened){stream.reset();streamOpened=nullptr;local.streaming=false;local.streamFrames=0;if(streamWindow)local.streamMessage.clear();{std::lock_guard l(mutex_);streamOpen_=false;}streamIdle_.notify_all();}
+            if(streamWindow&&!IsWindow(streamWindow)){std::lock_guard l(mutex_);if(streamWindow_==streamWindow)streamWindow_=nullptr;streamWindow=nullptr;}
+            if(streamWindow)try{
+                if(!stream){stream=std::make_unique<Surface>();stream->attach(surface.device.Get(),surface.context.Get(),streamWindow,2);streamOpened=streamWindow;local.streaming=true;local.streamMessage="2D stream view running";{std::lock_guard l(mutex_);streamOpen_=true;}}
+                RECT view{};GetClientRect(streamWindow,&view);
+                if(view.right>0&&view.bottom>0&&now-lastStream>=1/streamViewRate&&WaitForSingleObject(stream->waitable,0)==WAIT_OBJECT_0){
+                    if(unsigned(view.right)!=stream->width||unsigned(view.bottom)!=stream->height)stream->resize(view.right,view.bottom);
+                    stream->bind();
+                    draw.draw(surface.context.Get(),stream->width,stream->height,streamViewSettings(s),streamViewEye(s,streamRight),false,pattern,pairTime);
+                    const HRESULT presented=stream->swap->Present(0,DXGI_PRESENT_DO_NOT_WAIT);
+                    if(presented!=DXGI_ERROR_WAS_STILL_DRAWING){
+                        check(presented,"Present the stream view");
+                        if(presented==S_OK)++local.streamFrames;
+                    }
+                    lastStream=now;
+                }
+            }catch(const std::exception& e){
+                stream.reset();streamOpened=nullptr;local.streaming=false;local.streamMessage=std::string("2D stream view stopped: ")+e.what();
+                {std::lock_guard l(mutex_);streamOpen_=false;if(streamWindow_==streamWindow)streamWindow_=nullptr;}
+                streamIdle_.notify_all();lastPublish=0; // report the failure now, not in a quarter of a second
+            }
+            if(diagnostics.steadyTimingProbe){local.locked=false;local.message="Steady timing diagnostic: one eye, no emitter commands";}
+            if(!diagnostics.trace.empty()&&trace.size()<30000)trace.push_back({now-begin,waitEnd-waitBegin,sourceEnd-sourceBegin,drawEnd-sourceEnd,presentEnd-presentBegin,now-presentEnd,qpc()-now,id,UINT(expected),stats.PresentCount,stats.PresentRefreshCount,stats.SyncRefreshCount,sh,composed});
             if(now-lastPublish>.25){std::lock_guard l(mutex_);status_=local;lastPublish=now;}
         }
-        emitter_.suspend();{std::lock_guard l(mutex_);local.running=false;local.locked=false;status_=local;}
-    }catch(const std::exception& e){emitter_.suspend();std::lock_guard l(mutex_);status_.running=false;status_.locked=false;status_.message=e.what();}
+        if(!diagnostics.trace.empty()){
+            std::ofstream report(diagnostics.trace);report<<"time,wait,source,draw,present,stats,stream,submitted,expected,observed,refresh,sync,result,composed\n"<<std::setprecision(10);
+            for(const auto& f:trace)report<<f.time<<','<<f.wait<<','<<f.source<<','<<f.draw<<','<<f.present<<','<<f.stats<<','<<f.stream<<','<<f.submitted<<','<<f.expected<<','<<f.observed<<','<<f.refresh<<','<<f.sync<<','<<f.result<<','<<f.composed<<'\n';
+        }
+        stream.reset();emitter_.suspend();{std::lock_guard l(mutex_);local.running=false;local.locked=false;local.streaming=false;streamOpen_=false;status_=local;}streamIdle_.notify_all();
+    }catch(const std::exception& e){emitter_.suspend();{std::lock_guard l(mutex_);status_.running=false;status_.locked=false;status_.streaming=false;streamOpen_=false;status_.message=e.what();}streamIdle_.notify_all();}
     if(mmcss)AvRevertMmThreadCharacteristics(mmcss);
 }
 void Presenter::exportReport(const std::filesystem::path& path,const Settings& s,const std::string& source)const{
     auto r=status();auto usb=emitter_.status();std::filesystem::create_directories(path.parent_path());std::ofstream out(path);if(!out)throw std::runtime_error("Cannot write timing report.");
     auto samples=r.intervals;std::sort(samples.begin(),samples.end());auto percentile=[&](double q){return samples.empty()?0:samples[size_t(q*(samples.size()-1))];};
     out<<std::setprecision(10)<<"Vision Restoration timing report\nProfile: "<<s.name<<"\nDisplay: "<<s.displayId<<"\nConnection: "<<s.connection<<"\nMode: "<<s.width<<'x'<<s.height<<" @ "<<s.refresh<<" Hz\nHDR: "<<s.hdr<<"\nPreview: "<<r.preview<<"\nSequence: "<<int(s.sequence)<<"\nPhase us: "<<s.phaseUs<<"\nLeft/right duration us: "<<s.leftUs<<'/'<<s.rightUs<<"\nSource: "<<source<<"\nElapsed seconds: "<<r.elapsed<<"\nPresents: "<<r.presents<<"\nDetected misses: "<<r.misses<<"\nResynchronizations: "<<r.resyncs<<"\nMeasured refresh Hz: "<<r.measuredHz<<"\nCPU present interval p50/p95/p99 ms: "<<percentile(.5)<<'/'<<percentile(.95)<<'/'<<percentile(.99)<<"\nUSB commands/errors/late: "<<usb.commands<<'/'<<usb.errors<<'/'<<usb.late<<"\nLast/max USB transfer us: "<<usb.lastTransferUs<<'/'<<usb.maxTransferUs<<"\nVblank jitter rms/max us: "<<r.vblankJitterRmsUs<<'/'<<r.vblankJitterMaxUs<<"\nPresent interval jitter us: "<<r.presentJitterUs<<"\nEye command timing error last/rms/max us: "<<usb.sendErrorLastUs<<'/'<<usb.sendErrorRmsUs<<'/'<<usb.sendErrorMaxUs<<"\nTiming block writes: "<<usb.timingWrites<<"\nGlasses operation confirmed: "<<s.glassesConfirmed<<"\nEye order confirmed: "<<s.eyeConfirmed<<"\nUser assessment: "<<s.assessment<<"\nMonitor settings: "<<s.monitorNotes<<"\nValidated: "<<s.validated<<"\nThese are host timings, not optical measurements.\n";
+    out<<"Presenter status: "<<r.message<<"\n";
+    out<<"Queued presentation frames: "<<r.queueDepth<<"\n";
+    out<<"Clock rejected samples/confirmed corrections: "<<r.clockOutliers<<'/'<<r.clockCorrections<<"\nStatistics discontinuities: "<<r.statsDisjoints<<"\nRepeated eye commands suppressed: "<<usb.repeatedCommands<<"\n";
     out<<"Emitter identity: "<<usb.identity<<"\nFirmware: "<<usb.firmwareVersion<<"\nPredictive device scheduling: "<<usb.scheduled<<"\nClock uncertainty us: "<<usb.clockUncertaintyUs<<"\nDevice open/close commands: "<<usb.deviceOpens<<'/'<<usb.deviceCloses<<"\nInterval distribution uses the first "<<samples.size()<<" collected samples.\n";
     if(s.lcd.enabled){const auto& t=s.lcd;auto e=lcdExposure(t,apertureWindowHz(r.measuredHz>0?r.measuredHz:s.refresh,s.sequence),s.signalScanUs);
         out<<"LCD temporal aperture: enabled\nSettle us: "<<t.settleUs<<"\nDuration us: "<<t.durationUs<<"\nGlobal phase us: "<<t.phaseUs<<"\nLeft/right adjustment us: "<<t.leftAdjustUs<<'/'<<t.rightAdjustUs<<"\nGuard us: "<<t.guardUs<<"\nScan compensation: "<<t.compensateScanout<<"\nScan/reference: "<<(t.scanoutUs>0?t.scanoutUs:s.signalScanUs)<<'/'<<t.referencePosition<<"\nEye swap: "<<s.swapEyes<<"\nCalibration region: "<<t.target<<"\nExposure valid: "<<e.valid<<"\nL open/close us: "<<e.openUs[0]<<'/'<<e.closeUs[0]<<"\nR open/close us: "<<e.openUs[1]<<'/'<<e.closeUs[1]<<"\nApplied device period/duration us: "<<usb.aperturePeriodUs<<'/'<<usb.apertureDurationUs<<"\n";
@@ -524,8 +609,49 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
             }
             context->Unmap(staging.Get(),0);if(!correct)throw std::runtime_error(hook?"Hook convergence/eye seam failed.":"Presenter convergence/eye seam failed.");
         }
+        // Reuse the same DrawState/context exactly as the live stereo+stream
+        // loop does. Every stream pixel must stay on the selected eye, even
+        // immediately after a black slot, with all panel corrections enabled.
+        for(bool swap:{false,true})for(bool right:{false,true}){
+            Settings panel;panel.sequence=Sequence::BlackInsertion;panel.swapEyes=swap;
+            panel.bandHeight=.4f;panel.convergence=.05f;panel.imageGain=4;
+            panel.cancelCrosstalk=true;panel.leakProfile.fill(.4f);
+            const int selected=int(streamViewEye(panel,right));
+            for(unsigned index=0;index<12;++index){
+                draw.draw(context.Get(),160,80,panel,sequenceSlot(panel.sequence,index,false).eye,false,3,0);
+                draw.draw(context.Get(),160,80,streamViewSettings(panel),streamViewEye(panel,right),false,3,0);
+                context->CopyResource(staging.Get(),output.Get());D3D11_MAPPED_SUBRESOURCE m{};
+                check(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&m),"Read stable stream pixels");bool correct=true;
+                for(unsigned y=0;y<80;++y)for(unsigned x=0;x<160;++x){
+                    const auto* pixel=static_cast<uint8_t*>(m.pData)+y*m.RowPitch+x*4;
+                    correct&=pixel[selected]>=254&&pixel[1-selected]==0&&pixel[2]==0;
+                }
+                context->Unmap(staging.Get(),0);
+                if(!correct)throw std::runtime_error("2D stream inherited a black slot, opposite eye, or panel correction.");
+            }
+        }
+        // The explicitly selected diagnostic shows one eye at every refresh.
+        // This mode is never selected automatically during stereo playback.
+        for(bool swap:{false,true}){
+            Settings panel;panel.hdr=false;panel.sequence=Sequence::BlackInsertion;
+            panel.swapEyes=swap;panel.bandHeight=.4f;panel.imageGain=4;panel.convergence=.05f;
+            for(unsigned index=0;index<24;++index){
+                const auto selected=streamViewEye(panel,false);
+                draw.draw(context.Get(),160,80,steadyViewSettings(panel),selected,false,3,0);
+                context->CopyResource(staging.Get(),output.Get());D3D11_MAPPED_SUBRESOURCE m{};
+                check(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&m),"Read explicit diagnostic pixels");bool correct=true;
+                for(unsigned y=0;y<80;++y)for(unsigned x=0;x<160;++x){
+                    const auto* pixel=static_cast<uint8_t*>(m.pData)+y*m.RowPitch+x*4;
+                    correct&=pixel[int(selected)]>=254&&pixel[1-int(selected)]==0&&pixel[2]==0;
+                }
+                context->Unmap(staging.Get(),0);
+                if(!correct)throw std::runtime_error("Explicit steady diagnostic contained black/opposite-eye frames.");
+            }
+        }
     }
     draw.release();report<<"Presenter: separate texture-array eyes, SBS/TB eye boundaries, signed convergence and black margins PASS; hook: SBS/TB PASS\n";
+    report<<"2D stream: all pixels retain one eye through repeated L/B/R/B cycles, both eye selections and eye swap, SBS/TAB/arrays PASS\n";
+    report<<"Explicit timing diagnostic: fixed eye at every refresh; SBS/TAB/arrays PASS\n";
     // Capture must preserve scRGB values in HDR. SDR uses the captured display's
     // white level, not a curve that lifts shadows or darkens every white.
     for(bool hdr:{false,true})for(float white:{1.f,2.5f,4.f}){

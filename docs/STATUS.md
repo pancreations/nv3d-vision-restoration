@@ -1,5 +1,11 @@
 # Implementation and validation status
 
+## Experimental v0.2.0 release, 2026-09-26
+
+Includes continuous presentation-clock recovery, a refresh-dependent presentation queue, duplicate emitter-command rejection, fullscreen window ordering/input fixes, steady single-eye recording output, and consistent black-frame controls. See [v0.2.0 release notes](RELEASE-v0.2.0.md) for validation and limitations.
+
+The user reconfirmed RP2040 OLED operation at 240 Hz with BFI. The saved profile had BFI disabled; restoring Left / Black / Right / Black recovered sync without firmware or driver changes. The user retained the original phase, shutter widths and eye order. This is a settings recovery and a short optical confirmation, not proof of sustained gameplay stability.
+
 ## Experimental v0.1.1 release, 2026-09-22
 
 This update repairs direct-flip timing recovery, replaces coarse polling waits that capped covered-game and AI desktop capture near 32 pairs/s, and pauses the Geo11 adapter's redundant swap-chain presentation while the app covers the game. Fullscreen game output retains game input focus. AI desktop retains click-through input across F11 and source changes, uses steady capture/depth scheduling, and adds a **Responsive desktop** preset, saved depth update limit, and measured depth rate/map age.

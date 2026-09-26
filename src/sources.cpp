@@ -133,6 +133,10 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
             auto frames=cap::Direct3D11CaptureFramePool::CreateFreeThreaded(rtDevice,format,3,size);auto session=frames.CreateCaptureSession(item);session.IsCursorCaptureEnabled(false);session.StartCapture();
             while(!stop.stop_requested()){
                 if(!IsWindow(config.window)){std::lock_guard l(mutex_);status_.message="Source window closed; holding last complete pair";status_.running=false;break;}
+                // Minimize/hide can deliver empty or replacement WGC images.
+                // Hold the completed stereo pair while the game cannot draw;
+                // ordinary focus changes do not affect capture.
+                if(IsIconic(config.window)||!IsWindowVisible(config.window)){Sleep(10);continue;}
                 auto frame=frames.TryGetNextFrame();if(!frame){shortWait();continue;}
                 // Drain to the most recent complete packed pair.
                 while(auto newer=frames.TryGetNextFrame()){frame.Close();frame=newer;}

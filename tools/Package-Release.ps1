@@ -178,7 +178,7 @@ New-DocumentPdf $readmeHtml $readmePdfPath
 New-Item -ItemType Directory -Path (Join-Path $coreStage 'models') -Force | Out-Null
 foreach ($name in @(
     'VisionRestoration.exe', 'vision_firmware.exe', 'vision_stereo_setup.exe',
-    'vision_usb_recover.exe', 'vision_winusb_installer.exe', 'VisionDepth.exe',
+    'vision_usb_recover.exe', 'vision_winusb_installer.exe', 'vision_rp2040_probe.exe', 'VisionDepth.exe',
     'libusb-1.0.dll', 'onnxruntime.dll', 'DirectML.dll'
 )) {
     Copy-Required (Join-Path $binRoot $name) (Join-Path $coreStage $name)
@@ -193,6 +193,7 @@ Copy-Required (Join-Path $projectRoot 'build/rp2040/VisionEmitter.uf2') (Join-Pa
 Copy-Required (Join-Path $projectRoot 'tools/Start Vision Restoration.cmd') (Join-Path $coreStage 'Start Vision Restoration.cmd')
 Copy-Required (Join-Path $projectRoot 'tools/Start Vision Restoration.cmd') (Join-Path $coreStage 'Launch.cmd')
 Copy-Required (Join-Path $projectRoot 'README.md') (Join-Path $coreStage 'README.md')
+Copy-Required (Join-Path $projectRoot "docs/RELEASE-v$version.md") (Join-Path $coreStage 'Release Notes.md')
 Copy-Required (Join-Path $projectRoot 'tools/Prepare NVIDIA Firmware.cmd') (Join-Path $coreStage 'Prepare NVIDIA Firmware.cmd')
 Copy-Required (Join-Path $projectRoot 'tools/Prepare NVIDIA Firmware.ps1') (Join-Path $coreStage 'Prepare NVIDIA Firmware.ps1')
 Copy-Required (Join-Path $projectRoot 'third_party/7zip-26.03/x64/7za.exe') (Join-Path $coreStage 'tools/7zip/7za.exe')

@@ -6,6 +6,18 @@ The old subtraction-based "LightBoost" button was removed. Its description incor
 equated subtracting a predicted ghost with switching off the backlight, and called assumed
 Hisense response times measurements. Those claims are withdrawn.
 
+2026-09-22: the user explicitly rejects the earlier Hisense video-derived timings.
+Do not use them as calibration inputs or manufacturer specifications. The user now
+identifies the TV as the US 65U6SF-PRO (65-inch Fire TV, SKU 6673625). See the
+model-specific [manufacturer evidence and failed optical result](HISENSE-U6-BFI.md).
+
+The BFI control correction built under `build/u6-bfi-control-fix` makes all everyday
+BFI toggles clear neutral gray reset. A gray reset sequence no longer appears checked as
+black insertion. Panel drive buttons explicitly select manual phase/shutter timing;
+previously, an enabled guarded LCD aperture could override their requested shutter or
+reject a sequence change. Manual phase marks are disabled in guarded timing mode.
+These are software corrections, not evidence of clean U6 Pro stereo.
+
 ## Start here
 
 Close the currently running app, then use `Launch-Panel-Experiments.cmd`. This build lives

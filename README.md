@@ -50,6 +50,8 @@ The glasses must admit the intended eye's light while excluding the other eye's 
 - **Whole screen in 3D with AI depth (new, unverified through the glasses):** the desktop, a video or a 2D game is captured, a depth network estimates every pixel's depth and both eyes are resampled from it, the way SpaceWalker and Reality Hub convert 2D. The result is a click-through overlay, so the desktop stays usable. See [usage](docs/USAGE.md#whole-screen-in-3d-ai-depth).
 - **Live timing controls:** phase, shutter width, phase sweep and eye swap while you look through the glasses.
 - **Calibration aids:** built-in 3D test scene and per-eye test patterns.
+- **2D stream view:** a steady single-eye SDR view for recording or screen sharing, while the glasses continue receiving stereo.
+- **RP2040 DIY emitter:** scheduled USB timing and included firmware; OLED 240 Hz with BFI reconfirmed on 2026-09-26.
 - **Profiles:** timing saved per display and autosaved.
 - **Diagnostics:** vblank jitter, present timing and emitter command timing.
 
@@ -57,18 +59,18 @@ The glasses must admit the intended eye's light while excluding the other eye's 
 
 - Windows 10 or 11 (64-bit)
 - NVIDIA 3D Vision or 3D Vision 2 glasses
-- NVIDIA 3D Vision USB IR emitter
+- NVIDIA 3D Vision USB IR emitter, or the supported RP2040 DIY emitter described in [RP2040 setup](docs/RP2040.md)
 - An OLED monitor with a working 120 Hz or 240 Hz setup (the only display type proven so far)
 - A DX11 game with a working Geo11 fix, or an application that outputs side-by-side/top-bottom 3D for window capture
-- Your own copy of NVIDIA's 3D Vision USB driver package, for the emitter firmware. It is proprietary and not included.
+- For the original NVIDIA emitter: your own copy of NVIDIA's 3D Vision USB driver package, for its proprietary firmware. The RP2040 uses the included open-source UF2 instead.
 
 ## Installing
 
 ### 1. Download the portable release
 
-Download `Vision-Restoration-Portable-v0.1.1.zip` from [GitHub Releases](https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.1.1), extract the entire archive to a writable folder, and run `Start Vision Restoration.cmd`. The ZIP includes the complete application, AI helper and redistributable AI runtime, emitter utilities, x86/x64 game integration, and required runtime files. It never includes NVIDIA's proprietary emitter firmware, AI model weights, Geo11, or a game-specific fix.
+Download `Vision-Restoration-Portable-v0.2.0.zip` from [GitHub Releases](https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.2.0), extract the entire archive to a writable folder, and run `Start Vision Restoration.cmd`. The ZIP includes the complete application, AI helper and redistributable AI runtime, emitter utilities, x86/x64 game integration, and required runtime files. It never includes NVIDIA's proprietary emitter firmware, AI model weights, Geo11, or a game-specific fix.
 
-**New in v0.1.1:** fixes for delayed presentation recovery and the 32-pair/s capture bottleneck, game overlays that retain input focus, and smoother AI desktop capture with a **Responsive desktop** preset and measured depth-update rate. See the [release notes](docs/RELEASE-v0.1.1.md). Gameplay under sustained load and optical performance still need validation.
+**New in v0.2.0:** continuous presentation-clock recovery, a larger queue at high refresh rates, fullscreen output and input fixes, a steady single-eye **2D stream view** for recording, and consistent black-frame controls. The RP2040 emitter was reconfirmed working at **240 Hz with BFI enabled**. See the [release notes](docs/RELEASE-v0.2.0.md). Gameplay under sustained load and optical performance still need validation.
 
 Whole-screen AI depth needs a model file placed in the included empty `models\` folder. Download [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx) for the fastest option. [Base](https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx) and [Large](https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx) are slower and licensed for non-commercial use. Save each model with a distinct filename. Normal stereo images, window capture, game integration and emitter operation do not need a model.
 
@@ -99,6 +101,8 @@ cd nv3d-vision-restoration
 The app is built to `build\bin\Release\VisionRestoration.exe`.
 
 ### 2. Get the emitter firmware
+
+**RP2040 owners:** skip the NVIDIA firmware steps and follow [RP2040 setup](docs/RP2040.md). At 240 Hz, use **Black frame insertion** for the confirmed Left / Black / Right / Black setup; ordinary Left / Right at 240 Hz is a different cadence. `vision_rp2040_probe.exe --clock` checks USB timing with the app closed.
 
 The emitter has no permanent firmware: the PC uploads it every time the emitter is plugged in. That firmware lives inside NVIDIA's own driver file, `nvstusb.sys`.
 

@@ -3,6 +3,7 @@
 #include "lcd_ui.h"
 #include "lcd_rp2040.h"
 #include "control_menu.h"
+#include "output_window_order.h"
 #include "key_bindings.h"
 #include "gamesync.h"
 #include "stereo_compatibility.h"
@@ -28,8 +29,9 @@
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND,UINT,WPARAM,LPARAM);
 using namespace vision;
-static HWND controlWindow=nullptr,outputWindow=nullptr;
+static HWND controlWindow=nullptr,outputWindow=nullptr,streamWindow=nullptr;
 static bool closeRequested=false,outputStop=false,pauseRequested=false,resyncRequested=false;
+static bool streamCloseRequested=false;
 static bool displayRefreshChanged=false;
 static bool fullscreenMode=false,fullscreenRequested=false,controlsToggleRequested=false,controlsShowRequested=false;
 static KeyBindings* shortcuts=nullptr;
@@ -99,6 +101,13 @@ static LRESULT CALLBACK outputProc(HWND w,UINT m,WPARAM a,LPARAM b){
     // A display mode change invalidates the fullscreen presentation target. A USB
     // device change does not: keep presenting while the emitter reconnects.
     if(m==WM_DISPLAYCHANGE){outputStop=true;displayRefreshChanged=true;return 0;}
+    return DefWindowProcW(w,m,a,b);
+}
+// The 2D stream view carries no calibration keys and never takes focus: closing it
+// is the only thing it does. A key pressed over it belongs to the game underneath.
+static LRESULT CALLBACK streamProc(HWND w,UINT m,WPARAM a,LPARAM b){
+    if(m==WM_CLOSE){streamCloseRequested=true;return 0;}
+    if(m==WM_MOUSEACTIVATE)return MA_NOACTIVATE;
     return DefWindowProcW(w,m,a,b);
 }
 static LRESULT CALLBACK controlProc(HWND w,UINT m,WPARAM a,LPARAM b){
@@ -223,6 +232,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         int initialWidth=std::min(int(1180*windowScale),int(work.rcWork.right-work.rcWork.left)-40),initialHeight=std::min(int(850*windowScale),int(work.rcWork.bottom-work.rcWork.top)-40);
         SetWindowPos(controlWindow,nullptr,work.rcWork.left+(work.rcWork.right-work.rcWork.left-initialWidth)/2,work.rcWork.top+(work.rcWork.bottom-work.rcWork.top-initialHeight)/2,initialWidth,initialHeight,SWP_NOZORDER|SWP_NOACTIVATE);
         wc.lpfnWndProc=outputProc;wc.lpszClassName=L"VisionRestorationOutput";RegisterClassExW(&wc);
+        wc.lpfnWndProc=streamProc;wc.lpszClassName=L"VisionRestorationStream";RegisterClassExW(&wc);
         if(liveSeconds>0){
             // Headless fullscreen stereo output with the real emitter: the same presenter path the
             // GUI uses with Preview unchecked. Writes reports/live-check.txt. Escape stops early.
@@ -267,9 +277,14 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         if(!smoke){sourceKind=5;sourceConfig.kind=SourceKind::DirectEyes;}
         int screenDisplayIndex=0;sourceConfig.depthHelper=executableDirectory()/L"VisionDepth.exe";sourceConfig.depthModel=findDepthModel();sourceConfig.depthLog=workspace()/L"reports"/L"depth-helper.log";
         ControlMenu controlMenu(controlWindow,smoke);
+        OutputWindowOrder outputOrder;
         KeyBindings keyBindings(controlWindow,smoke?std::filesystem::path{}:workspace()/L"profiles/shortcuts.ini",dispatchShortcut);shortcuts=&keyBindings;
         NOTIFYICONDATAW tray{sizeof(tray)};tray.hWnd=controlWindow;tray.uID=1;tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;tray.uCallbackMessage=trayMessage;tray.hIcon=LoadIconW(nullptr,IDI_APPLICATION);wcscpy_s(tray.szTip,L"Vision Restoration - show controls / enable shortcuts");if(!smoke)Shell_NotifyIconW(NIM_ADD,&tray);
         bool outputEmbedded=false;RECT previewRect{0,0,640,360},placedPreviewRect{};
+        // 2D stream view (src/stream_view.h). Mirror covers the output display with it and
+        // hides the alternating output from capture, so an ordinary screen share works;
+        // otherwise it is a plain window to pick from a recorder's application list.
+        bool streamView=wcsstr(GetCommandLineW(),L"--stream-view")!=nullptr,streamMirror=wcsstr(GetCommandLineW(),L"--stream-window")==nullptr,streamRightEye=false;std::string streamStatus="Off. A screen share of frame-sequential 3D jumps and flashes; this gives the recorder one eye instead.";
         bool outputPassThrough=false,screenOutput=false;HWND outputGame=nullptr;
         std::filesystem::path selectedGame;
         compatibility::Inspection gameInfo;
@@ -297,7 +312,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         }
         auto pattern=[&]{if(sourceKind!=0)return 3;if(settings.lcd.enabled&&step==6)return settings.lcd.target?8+settings.lcd.target:7;return step<3?step:step==3?4:step+1;};
         auto restoreControls=[&]{fullscreenMode=false;keyBindings.activate(false);controlMenu.leaveFullscreen();};
-        auto stopOutput=[&]{restoreControls();lcdUi.sweeping=false;opticalMarks.fill(0);opticalKey.clear();bool wasFullscreen=outputWindow&&!outputEmbedded&&!presenter.status().preview;sweep.active=false;presenter.showPhase(false);presenter.stop();gameSync.enable(true);paused=false;if(outputWindow){DestroyWindow(outputWindow);outputWindow=nullptr;}outputEmbedded=false;bool keepFocus=outputPassThrough;outputPassThrough=false;screenOutput=false;outputGame=nullptr;if(!smoke&&wasFullscreen&&!keepFocus){ShowWindow(controlWindow,SW_RESTORE);SetForegroundWindow(controlWindow);}};
+        // The presenter draws the stream view, so it must be released before the window goes.
+        auto stopStreamView=[&]{presenter.streamTo(nullptr,false);if(streamWindow){DestroyWindow(streamWindow);streamWindow=nullptr;}};
+        auto stopOutput=[&]{stopStreamView();restoreControls();lcdUi.sweeping=false;opticalMarks.fill(0);opticalKey.clear();bool wasFullscreen=outputWindow&&!outputEmbedded&&!presenter.status().preview;sweep.active=false;presenter.showPhase(false);presenter.stop();gameSync.enable(true);paused=false;if(outputWindow){DestroyWindow(outputWindow);outputWindow=nullptr;}outputEmbedded=false;bool keepFocus=outputPassThrough;outputPassThrough=false;screenOutput=false;outputGame=nullptr;if(!smoke&&wasFullscreen&&!keepFocus){ShowWindow(controlWindow,SW_RESTORE);SetForegroundWindow(controlWindow);}};
         auto clampTiming=[&]{if(!displays.empty())settings.signalScanUs=displays[displayIndex].scanUs;double p=periodUs(settings.refresh);auto emitterState=emitter.status();settings.phaseUs=emitterState.scheduled&&emitterState.firmwareVersion.starts_with("VRP1/0.2.0/")?wrapSignedPhase(settings.phaseUs,p):wrapPhase(settings.phaseUs,phaseCycleUs(settings.refresh,settings.sequence));double maximum=emitterState.scheduled?calibrationMaxShutterUs(settings.refresh):nvidiaMaxShutterUs(sequenceEmitterHz(settings.refresh,settings.sequence));settings.leftUs=std::clamp(settings.leftUs,minimumShutterUs,maximum);settings.rightUs=std::clamp(settings.rightUs,minimumShutterUs,maximum);
             settings.imageGain=std::clamp(settings.imageGain,1.f,8.f);
             settings.bandHeight=std::clamp(settings.bandHeight,.1f,1.f);settings.bandCenter=std::clamp(settings.bandCenter,settings.bandHeight/2,1-settings.bandHeight/2);
@@ -319,12 +336,55 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         auto updateCaptureExclusion=[&]{
             // A child preview belongs to the controls' top-level window. Exclude
             // both top-level windows in every screen-source view, including F11.
+            // A mirroring stream view hides the alternating output from capture for the
+            // same reason the screen source does: what a recorder must see lies under it.
             for(HWND window:{controlWindow,outputEmbedded?nullptr:outputWindow})if(window){
-                const DWORD desired=(sourceKind==3||(window==controlWindow&&fullscreenMode))?WDA_EXCLUDEFROMCAPTURE:WDA_NONE;
+                const bool mirrored=window==outputWindow&&streamWindow&&streamMirror;
+                const DWORD desired=(sourceKind==3||mirrored||(window==controlWindow&&fullscreenMode))?WDA_EXCLUDEFROMCAPTURE:WDA_NONE;
                 DWORD current=0;
-                if((!GetWindowDisplayAffinity(window,&current)||current!=desired)&&!SetWindowDisplayAffinity(window,desired)&&sourceKind==3)
+                if((!GetWindowDisplayAffinity(window,&current)||current!=desired)&&!SetWindowDisplayAffinity(window,desired)&&(sourceKind==3||mirrored))
                     throw std::runtime_error("Windows could not exclude the stereo output from desktop capture.");
             }
+            // The stream view itself exists to be captured.
+            if(streamWindow)SetWindowDisplayAffinity(streamWindow,WDA_NONE);
+        };
+        // Opens the 2D stream view over a running 3D output. Frame-sequential 3D cannot
+        // survive a screen recorder: it samples one eye or a black slot per captured
+        // frame, which is the sideways jumping and flashing a viewer sees. This hands
+        // the recorder a steady single-eye picture instead (src/stream_view.h).
+        auto startStreamView=[&]{
+            stopStreamView();
+            if(!presenter.status().running)throw std::runtime_error("Start the 3D output before the stream view.");
+            if(presenter.status().preview)throw std::runtime_error("The side-by-side preview is already flat; a recorder can capture it as it is.");
+            if(sourceKind==3)throw std::runtime_error("The whole-screen conversion needs no stream view: its output is already hidden from capture, so a recorder sees the plain 2D desktop.");
+            if(displays.empty())throw std::runtime_error("No output found.");
+            RECT rect=displays[displayIndex].rect;
+            if(!streamMirror){
+                MONITORINFO work{sizeof(work)};
+                if(!GetMonitorInfoW(MonitorFromWindow(controlWindow,MONITOR_DEFAULTTONEAREST),&work))throw std::runtime_error("Cannot place the stream view.");
+                const LONG width=std::min(1280L,work.rcWork.right-work.rcWork.left-80),height=std::min(720L,work.rcWork.bottom-work.rcWork.top-80);
+                rect={work.rcWork.left+40,work.rcWork.top+40,work.rcWork.left+40+width,work.rcWork.top+40+height};
+            }
+            // Mirror mode must never take the pad or the pointer from the game, and must
+            // never come out above the stereo output: the viewer has to keep seeing 3D.
+            // Window mode stays an ordinary, movable window: a recorder lists it and the
+            // viewer can put it where they like. SW_SHOWNOACTIVATE keeps it from stealing
+            // focus from the game when it opens.
+            const DWORD exStyle=streamMirror?WS_EX_TOPMOST|WS_EX_NOACTIVATE|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW:0;
+            streamWindow=CreateWindowExW(exStyle,L"VisionRestorationStream",L"Vision Restoration stream view (2D)",streamMirror?WS_POPUP:WS_OVERLAPPEDWINDOW,
+                rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,nullptr,nullptr,instance,nullptr);
+            if(!streamWindow)throw std::runtime_error("Could not create the stream view window.");
+            // Establish opacity and order before showing it. WS_EX_TRANSPARENT
+            // alone does not pass mouse input through to another process.
+            if(streamMirror&&(!SetLayeredWindowAttributes(streamWindow,0,255,LWA_ALPHA)||
+               !SetWindowPos(streamWindow,outputWindow,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE))){
+                stopStreamView();throw std::runtime_error("Could not place the stream view below the stereo output.");
+            }
+            ShowWindow(streamWindow,SW_SHOWNOACTIVATE);
+            presenter.streamTo(streamWindow,streamRightEye);
+            try{updateCaptureExclusion();}catch(...){stopStreamView();throw;}
+            streamStatus=streamMirror?"On. Share the whole screen: the 3D output is hidden from capture and the recorder sees this 2D copy. Do not pick the game itself - it stops drawing under the 3D output.":
+                                      "On. In your recorder pick the window \"Vision Restoration stream view (2D)\", not the screen and not the game.";
         };
         auto outputSettings=[&]{auto active=settings;if(settings.lcd.enabled){active.lcd=lastAppliedLcd;active.lcd.enabled=true;active.lcd.target=settings.lcd.target;active.sequence=lastAppliedSequence;active.refresh=lastAppliedRefresh;}return active;};
         auto update=[&](bool persist=true){updateCaptureExclusion();clampTiming();if(settings.lcd.enabled){
@@ -341,12 +401,14 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 const auto inputStyle=GetWindowLongPtrW(outputWindow,GWL_EXSTYLE)|WS_EX_NOACTIVATE|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW;
                 const bool styled=SetWindowLongPtrW(outputWindow,GWL_EXSTYLE,inputStyle)!=0||GetLastError()==0;
                 const auto& rect=displays[displayIndex].rect;
-                if(!styled||!SetLayeredWindowAttributes(outputWindow,0,255,LWA_ALPHA)||
+                if(!styled||!configureOutputOverlay(outputWindow)||
                    !SetWindowPos(outputWindow,HWND_TOPMOST,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_FRAMECHANGED)){
                     stopOutput();throw std::runtime_error("Could not enable desktop input on the fullscreen output.");
                 }
                 screenOutput=outputPassThrough=true;outputGame=nullptr;
             }
+            if(outputWindow&&outputPassThrough&&!configureOutputOverlay(outputWindow))
+                throw std::runtime_error("Windows could not change fullscreen overlay compatibility.");
             {auto presented=active;if(screenOutput)presented.convergence=0;presenter.configure(presented,pattern());}
             // The screen conversion draws at most one pair per pair the sequence shows; its image settings apply live.
             {ScreenSettings sc=settings.screen;sc.pairRate=settings.refresh/cycleLength(settings.sequence);sourceConfig.screen=sc;source.configureScreen(sc);}
@@ -393,7 +455,22 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             // and embedded preview are interactive app windows for a screen source.
             screen=screen||(sourceKind==3&&!embedded&&(!sideBySide||fullscreen));
             // The whole-screen conversion lies over the output display and passes input through.
-            if(screen)overlay=&d.rect;
+            if(screen||(!embedded&&(!sideBySide||fullscreen)))overlay=&d.rect;
+            // Window capture needs the same input policy as a directly hooked
+            // game. Previously only sourceKind==5 reached a game overlay; F11
+            // on an SBS capture created an activating, non-layered fullscreen
+            // window, bypassing overlay compatibility and fighting game focus.
+            HWND capturedGame=nullptr;RECT capturedRect{};
+            if(sourceKind==2&&!embedded&&(!sideBySide||fullscreen)){
+                capturedGame=sourceConfig.window;
+                if(!IsWindow(capturedGame)||IsIconic(capturedGame))throw std::runtime_error("Restore the captured game window before starting fullscreen 3D.");
+                if(MonitorFromWindow(capturedGame,MONITOR_DEFAULTTONEAREST)!=d.monitor)throw std::runtime_error("Select the captured game's display as the output first.");
+                if(!GetClientRect(capturedGame,&capturedRect)||capturedRect.right<=0||capturedRect.bottom<=0)throw std::runtime_error("The captured game has no drawable client area.");
+                MapWindowPoints(capturedGame,nullptr,reinterpret_cast<POINT*>(&capturedRect),2);
+                // Capture follows the source; the 3D screen covers the selected
+                // display regardless of the source window's size or position.
+                overlay=&d.rect;
+            }
             if(!sideBySide){
                 if(settings.refresh<100&&!emitter.status().extendedCadence)throw std::runtime_error("Stereo output requires at least 100 Hz with this emitter firmware.");
                 if(!refreshRatesMatch(settings.refresh,d.refresh))throw std::runtime_error("Emitter timing and output refresh differ. Use Match output rate first.");
@@ -402,7 +479,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 if(e.scheduled&&!settings.lcd.enabled&&!rp2040TimingSupported(settings.refresh,settings.sequence,e.extendedCadence,e.fastCadence))throw std::runtime_error(e.extendedCadence?"RP2040 needs 30-120 eye openings/s. Select a compatible repeated/black sequence under Panel experiments.":"Update RP2040 firmware for LCD preload; this build supports only 120 Hz Left / Right.");
                 if(e.state!=EmitterState::Ready&&e.state!=EmitterState::Running)throw std::runtime_error("Connect an emitter to start stereo output.");
             }
-            stopOutput();
+            stopOutput();outputOrder.reset();
             if(sourceKind==3&&!smoke&&!source.status().running){
                 sourceConfig.kind=SourceKind::Screen;sourceConfig.monitor=displays[std::clamp(screenDisplayIndex,0,int(displays.size())-1)].monitor;
                 sourceConfig.screen=settings.screen;sourceConfig.screen.pairRate=settings.refresh/cycleLength(settings.sequence);
@@ -422,15 +499,14 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(embedded){x=previewRect.left;y=previewRect.top;width=previewRect.right-x;height=previewRect.bottom-y;placedPreviewRect=previewRect;}
             if(overlay){x=overlay->left;y=overlay->top;width=overlay->right-overlay->left;height=overlay->bottom-overlay->top;}
             // Screen output leaves the underlying application focused and passes mouse input through.
-            // Keep the image opaque so Windows can use a hardware overlay / independent flip.
-            // Alpha 254 forced DWM composition at 240 Hz and caused repeated timing mismatches
-            // under GPU load (reports/overlay-opacity-ab.log). Composition changes no longer
-            // force a resync. WS_EX_TRANSPARENT still passes mouse input to the underlying app.
+            // The output is opaque and nonactivating. It remains above the
+            // application receiving input without blending its image underneath.
             DWORD exStyle=(sideBySide&&!fullscreen)||embedded?0:WS_EX_TOPMOST|(overlay?WS_EX_NOACTIVATE|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW:0);
             outputWindow=CreateWindowExW(exStyle,L"VisionRestorationOutput",sideBySide?L"Inspect eye images | 2D side by side":L"Stereo output",embedded?WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS:sideBySide&&!fullscreen?WS_OVERLAPPEDWINDOW:WS_POPUP,x,y,width,height,embedded?controlWindow:nullptr,nullptr,instance,nullptr);
             if(!outputWindow)throw std::runtime_error("Could not create the output window.");
             outputPassThrough=overlay!=nullptr;
-            if(overlay&&!SetLayeredWindowAttributes(outputWindow,0,255,LWA_ALPHA)){stopOutput();throw std::runtime_error("Could not enable the click-through output overlay.");}
+            outputGame=capturedGame;
+            if(overlay&&!configureOutputOverlay(outputWindow)){stopOutput();throw std::runtime_error("Could not enable the click-through output overlay.");}
             try{updateCaptureExclusion();}catch(...){stopOutput();throw;}
             screenOutput=screen;
             // A single owner controls the emitter while either app output is open.
@@ -439,10 +515,13 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             Settings presented=active;if(screen)presented.convergence=0;
             try{presenter.start(outputWindow,d,presented,sideBySide,pattern());}catch(...){stopOutput();throw;}
             if(overlay)ShowWindow(outputWindow,SW_SHOWNOACTIVATE);else{ShowWindow(outputWindow,SW_SHOW);if(!embedded)SetForegroundWindow(outputWindow);}
+            if(capturedGame&&!smoke)SetForegroundWindow(capturedGame);
             // The game overlay gets the floating menu and global keys too; without them nothing could be
             // tuned while playing. Its smoke test uses the control window itself as the "game".
             fullscreenMode=!embedded&&(fullscreen||screen||(!sideBySide&&!(overlay&&smoke)));
             if(fullscreenMode){controlMenu.enterFullscreen(d.rect);keyBindings.activate(!smoke);}
+            // A failed stream view never costs the viewer their 3D: it reports and turns itself off.
+            if(streamView&&!sideBySide&&!embedded&&sourceKind!=3)try{startStreamView();}catch(const std::exception& e){streamView=false;streamStatus=std::string("Off: ")+e.what();}
             notice=screen?"The whole display is on the glasses in 3D; mouse and keys go through to the desktop. Ctrl+Alt+F8 stops. Ctrl+Alt+PageUp/PageDown: depth strength, Ctrl+Alt+Home/End: screen plane, Ctrl+Alt+Insert: 2D/3D.":embedded?"Live 3D preview: adjust phase, shutter and convergence while watching through the glasses.":sideBySide?"2D inspection of the separate eye images.":"Fullscreen stereo. Escape returns to the controls.";
         };
         auto startGameOutput=[&]{
@@ -456,7 +535,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             update();
             const bool started=!source.status().running;
             if(started)source.start(sourceConfig,displays[displayIndex].adapterLuid);
-            try{startOutput(false,false,&rect);outputGame=game;SetForegroundWindow(game);}
+            try{startOutput(false,false,&displays[displayIndex].rect);outputGame=game;SetForegroundWindow(game);}
             catch(...){if(started)source.stop();throw;}
             notice="Game stereo is active. Mouse, keyboard and controller focus stay with the game. Home shows or hides the controls; Ctrl+Alt+arrows tune phase and shutter, Ctrl+Alt+X swaps eyes.";
         };
@@ -548,6 +627,27 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         if(wcsstr(GetCommandLineW(),L"--responsive-screen"))responsiveDesktop();
         if(smoke&&wcsstr(GetCommandLineW(),L"--vlc-smoke")){sourceKind=4;sourceConfig.kind=SourceKind::Vlc;requestedTool=1;}
         if(wcsstr(GetCommandLineW(),L"--games")){requestedTool=8;sourceKind=5;sourceConfig.kind=SourceKind::DirectEyes;}
+        // Reproduce a capture session without clicking through the source list.
+        // Explicit PID only; never launch a game or pick an arbitrary process.
+        if(!smoke){int count=0;auto args=CommandLineToArgvW(GetCommandLineW(),&count);
+            for(int i=1;i+1<count;++i)if(std::wstring(args[i])==L"--capture-pid"){
+                const DWORD wanted=wcstoul(args[++i],nullptr,10);
+                runAction([&]{
+                    if(!wanted||displays.empty())throw std::runtime_error("Capture startup needs a running process and output display.");
+                    HWND selected=nullptr;int64_t largest=0;
+                    for(const auto& entry:captureWindows(controlWindow)){
+                        DWORD pid=0;GetWindowThreadProcessId(entry.first,&pid);RECT rect{};
+                        if(pid==wanted&&!IsIconic(entry.first)&&GetClientRect(entry.first,&rect)){
+                            const int64_t area=int64_t(rect.right)*rect.bottom;
+                            if(area>largest){largest=area;selected=entry.first;}
+                        }
+                    }
+                    if(!selected)throw std::runtime_error("No drawable window for the requested capture process.");
+                    sourceKind=2;sourceConfig.kind=SourceKind::Window;sourceConfig.window=selected;requestedTool=1;
+                    update(false);source.start(sourceConfig,displays[displayIndex].adapterLuid);
+                });
+            }LocalFree(args);
+        }
         std::string renderCheck="Render checks have not run in this session.";
         std::string vblankReport="No vblank measurement in this session. It times the display's blanking interval against the presentation timestamps and stores the scan start offset.";std::future<VblankMeasurement> vblankJob;
         // Deterministic UI coverage without changing a real display or profile.
@@ -566,28 +666,31 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         double liveTestNext=0,liveTestStarted=qpc(),liveTestSteadyStart=0;unsigned liveTestPresets=0;uint64_t liveTestSteadyMisses=0;unsigned liveTestEdits=0;uint64_t liveTestStartCommands=0;HWND liveTestWindow=nullptr;
         bool fullscreenSmoke=smoke&&wcsstr(GetCommandLineW(),L"--fullscreen-smoke");
         bool gameOverlaySmoke=smoke&&wcsstr(GetCommandLineW(),L"--game-overlay-smoke");
+        struct SmokeCaptureWindow {HWND window=nullptr;~SmokeCaptureWindow(){if(window)DestroyWindow(window);}} smokeCapture;
         const bool prepareSmoke=smoke&&wcsstr(GetCommandLineW(),L"--prepare-smoke");
         if(prepareSmoke){selectedGame=compatibility::processExecutable(GetCurrentProcessId());gamePrepared=true;prepareStatus="Prepared smoke test";}
         while(!closeRequested){
             MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}if(smoke && qpc()-smokeStart>3)break;
             if(outputGame&&outputWindow){
-                if(!IsWindow(outputGame)){stopOutput();source.stop();notice="Game closed; capture stopped.";}
-                else{
-                    RECT rect{};GetClientRect(outputGame,&rect);MapWindowPoints(outputGame,nullptr,reinterpret_cast<POINT*>(&rect),2);
-                    DWORD foregroundPid=0,gamePid=0;GetWindowThreadProcessId(GetForegroundWindow(),&foregroundPid);GetWindowThreadProcessId(outputGame,&gamePid);
-                    RECT positioned{};GetWindowRect(outputWindow,&positioned);
-                    if(!EqualRect(&positioned,&rect)&&rect.right>rect.left&&rect.bottom>rect.top)SetWindowPos(outputWindow,nullptr,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_NOZORDER);
-                    // Our own menu taking focus must not drop the 3D image being tuned.
-                    const bool show=!IsIconic(outputGame)&&(foregroundPid==gamePid||foregroundPid==GetCurrentProcessId());
-                    if(show&&!IsWindowVisible(outputWindow))SetWindowPos(outputWindow,HWND_TOPMOST,0,0,0,0,SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW);
-                    else if(!show&&IsWindowVisible(outputWindow))ShowWindow(outputWindow,SW_HIDE);
-                }
+                if(!IsWindow(outputGame)){outputGame=nullptr;source.stop();notice="Game closed; holding the last stereo image. Stop output when finished.";}
+            }
+            if(!smoke&&outputWindow&&!outputEmbedded&&(fullscreenMode||outputPassThrough)){
+                keepOutputOnDisplay(outputWindow,displays[displayIndex].rect);
+                const auto order=outputOrder.maintain(outputWindow,controlMenu.visible()?controlWindow:nullptr,GetTickCount64(),GetForegroundWindow(),streamMirror?streamWindow:nullptr);
+                if(order==OutputWindowOrder::Result::Failed)notice="Windows delayed restoring output priority; stereo continues and window order will be retried.";
             }
             // While the 3D output lies over the game, the game's provider stops presenting underneath
             // it (two full-refresh swap chains on one display flashed black) and paces its pairs to
             // the rate this output can show: one per eye cycle.
             source.announceDirect(sourceKind==5&&outputWindow&&!outputEmbedded&&(outputGame||fullscreenMode)&&IsWindowVisible(outputWindow),settings.refresh>0?uint32_t(1e6*cycleLength(settings.sequence)/settings.refresh):0);
             if(outputStop){outputStop=false;if(gamePrepared){cancelPreparation();source.stop();}stopOutput();}
+            if(streamCloseRequested){streamCloseRequested=false;streamView=false;stopStreamView();streamStatus="Off. Closed from the stream view window.";runAction([&]{updateCaptureExclusion();});}
+            // The whole-screen conversion captures the display the stream view would sit on,
+            // so leaving it open would feed the stream view back into its own depth map.
+            if(sourceKind==3&&streamWindow){streamView=false;stopStreamView();streamStatus="Off: the whole-screen conversion would capture the stream view itself. Its own output is already hidden from recorders, so a screen share shows the plain desktop.";runAction([&]{updateCaptureExclusion();});}
+            // The presenter gives the stream view up on any failure of its own; take the
+            // window down with it rather than leaving a frozen picture in the screen share.
+            if(streamWindow){const auto live=presenter.status();if(!live.streaming&&!live.streamMessage.empty()){streamView=false;streamStatus=std::string("Off: ")+live.streamMessage;stopStreamView();runAction([&]{updateCaptureExclusion();});}}
             try{pollPreparedGame();}catch(const std::exception& e){cancelPreparation();if(outputGame)stopOutput();source.stop();prepareStatus=std::string("Preparation stopped: ")+e.what();error=prepareStatus;}
             if(fullscreenRequested){fullscreenRequested=false;runAction([&]{if(fullscreenMode)startOutput(presenter.status().preview,true);else startFullscreenOutput();});}
             if(controlsToggleRequested){controlsToggleRequested=false;toggleFullscreenControls();}
@@ -615,7 +718,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(markRequested){markRequested=false;if(sweep.active){sweep.marks.push_back(settings.phaseUs);std::ostringstream t;t<<"Marked phase "<<std::fixed<<std::setprecision(0)<<settings.phaseUs<<" us (mark "<<sweep.marks.size()<<").";notice=t.str();}}
             if(acceptRequested){acceptRequested=false;lcdUi.sweeping=false;stopSweep("Phase sweep stopped at the current phase.");}
             if(cancelToggleRequested){cancelToggleRequested=false;settings.cancelCrosstalk=!settings.cancelCrosstalk;runAction(update);notice=settings.cancelCrosstalk?"Legacy ghost subtraction on (unverified).":"Legacy ghost subtraction off.";}
-            if(bfiToggleRequested){bfiToggleRequested=false;if((!emitter.status().scheduled||emitter.status().extendedCadence)){settings.sequence=settings.sequence==Sequence::BlackInsertion?Sequence::Alternating:Sequence::BlackInsertion;runAction(update);notice=settings.sequence==Sequence::BlackInsertion?"Software black frame insertion on: Left / Black / Right / Black.":"Software black frame insertion off: Left / Right.";}}
+            if(bfiToggleRequested){bfiToggleRequested=false;if((!emitter.status().scheduled||emitter.status().extendedCadence)){setBlackFrameInsertion(settings,settings.sequence!=Sequence::BlackInsertion||settings.guardLevel>0);runAction(update);notice=settings.sequence==Sequence::BlackInsertion?"Software black frame insertion requested: Left / Black / Right / Black.":"Software black frame insertion off requested: Left / Right.";}}
             if(settings.lcd.enabled){auto live=presenter.status();double hz=apertureWindowHz(live.locked?live.measuredHz:settings.refresh,settings.sequence);if(tickLcdCalibration(lcdUi,settings,hz,qpc(),live.running&&live.locked&&!live.preview&&!paused&&!outputEmbedded&&sameLcdAperture(settings.lcd,lastAppliedLcd)&&sourceKind==0&&step==6))runAction([&]{update(false);});}
             if(sweep.active){double now=qpc();if(now-sweep.lastStep>=0.1){sweep.lastStep=now;double cycle=phaseCycleUs(settings.refresh,settings.sequence);settings.phaseUs=wrapPhase(sweep.origin+(now-sweep.start)/sweep.secondsPerCycle*cycle,cycle);runAction([&]{update(false);});}}
             if(vblankJob.valid()&&vblankJob.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto measured=vblankJob.get();vblankReport=measured.message;if(measured.ok&&measured.scanlineSamples>=8){settings.scanStartUs=std::clamp(measured.scanStartAfterSyncUs,-5000.,5000.);runAction(update);notice="Vblank measured; the scan start offset is stored with the profile and used by Suggest phase.";}}
@@ -636,8 +739,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 auto sch=es.scheduled?NvidiaSchedule{0,0,settings.phaseUs}:nvidiaSchedule(settings.refresh,settings.phaseUs);
                 log<<std::fixed<<std::setprecision(1)<<"t="<<now<<" refresh="<<settings.refresh<<" hdr="<<settings.hdr<<" phase="<<settings.phaseUs<<" boundary="<<sch.boundaryUs<<" x="<<sch.delayUs<<" shutter="<<settings.leftUs<<"/"<<settings.rightUs<<" swap="<<settings.swapEyes<<" seq="<<int(settings.sequence)
                    <<" | out="<<rs.running<<" preview="<<rs.preview<<" locked="<<rs.locked<<" hz="<<std::setprecision(3)<<rs.measuredHz<<std::setprecision(1)<<" presents="<<rs.presents<<" misses="<<rs.misses<<" resyncs="<<rs.resyncs<<" slipsPerSec="<<rs.slipsLastSecond<<" composed="<<rs.composed<<" modeChanges="<<rs.modeChanges<<" lead="<<rs.leadBins[0]<<"/"<<rs.leadBins[1]<<"/"<<rs.leadBins[2]<<"/"<<rs.leadBins[3]<<"/"<<rs.leadBins[4]<<"/"<<rs.leadBins[5]<<" maxIntervalMs="<<rs.maxIntervalMs<<" vblankJitterUs="<<rs.vblankJitterRmsUs<<"/"<<rs.vblankJitterMaxUs<<" presentJitterUs="<<rs.presentJitterUs<<" gpuPriority=\""<<rs.gpuPriority<<"\" illum="<<int(settings.illumination)<<" strobe="<<settings.strobeStartUs<<"+"<<settings.strobeLengthUs<<" scanStart="<<settings.scanStartUs<<" band="<<settings.bandHeight<<"@"<<settings.bandCenter<<" guard="<<settings.guardLevel<<" floor="<<settings.blackFloor<<" cancel="<<settings.cancelCrosstalk<<"x"<<settings.cancelStrength<<" leak="<<settings.leakProfile[0]<<"/"<<settings.leakProfile[3]<<"/"<<settings.leakProfile[7]<<" msg=\""<<rs.message<<"\""
-                   <<" blackOnImage="<<rs.blackOnImage<<" clockReacquires="<<rs.clockReacquires
-                   <<" | emitter="<<int(es.state)<<" cmds="<<es.commands<<" late="<<es.late<<" errors="<<es.errors<<" lastUs="<<es.lastTransferUs<<" maxUs="<<es.maxTransferUs<<" sendErrUs="<<es.sendErrorLastUs<<"/"<<es.sendErrorRmsUs<<"/"<<es.sendErrorMaxUs<<" writes="<<es.timingWrites<<" msg=\""<<es.message<<"\"";
+                   <<" blackOnImage="<<rs.blackOnImage<<" clockReacquires="<<rs.clockReacquires<<" clockOutliers="<<rs.clockOutliers<<" clockCorrections="<<rs.clockCorrections<<" statsDisjoints="<<rs.statsDisjoints<<" windowOrderRepairs="<<outputOrder.repairs()<<" occluded="<<rs.occluded<<" opaqueOverlay=1 passthrough="<<outputPassThrough<<" gameOverlay="<<(outputGame!=nullptr)
+                   <<" queue="<<rs.queueDepth<<" stream="<<rs.streaming<<"/"<<(streamMirror?"mirror":"window")<<" streamFrames="<<rs.streamFrames<<" streamMsg=\""<<rs.streamMessage<<"\""
+                   <<" | emitter="<<int(es.state)<<" cmds="<<es.commands<<" late="<<es.late<<" repeated="<<es.repeatedCommands<<" errors="<<es.errors<<" lastUs="<<es.lastTransferUs<<" maxUs="<<es.maxTransferUs<<" sendErrUs="<<es.sendErrorLastUs<<"/"<<es.sendErrorRmsUs<<"/"<<es.sendErrorMaxUs<<" writes="<<es.timingWrites<<" msg=\""<<es.message<<"\"";
                 if(settings.lcd.enabled){const auto& t=settings.lcd;log<<" | lcd settle="<<t.settleUs<<" duration="<<t.durationUs<<" phase="<<t.phaseUs<<" leftAdjust="<<t.leftAdjustUs<<" rightAdjust="<<t.rightAdjustUs<<" guard="<<t.guardUs<<" scanComp="<<t.compensateScanout<<" scan="<<t.scanoutUs<<" row="<<t.referencePosition<<" devicePeriod="<<es.aperturePeriodUs<<" deviceDuration="<<es.apertureDurationUs;}
                 // Capture source: frame count, drops, packed frame size and age, so a capture that stalls,
                 // resizes or crops when the game gains focus shows up next to the presenter's timing.
@@ -670,8 +774,10 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                     ImGui::TextDisabled("Presets use the selected display's current refresh.");ImGui::EndCombo();
                 }
                 if(preset>=0)runAction([&]{applyStartingPreset(preset);});
-                bool bfi=settings.sequence==Sequence::BlackInsertion;
-                if(ImGui::Checkbox("Black frame insertion",&bfi)){settings.sequence=bfi?Sequence::BlackInsertion:Sequence::Alternating;changed=true;}
+                bool bfi=settings.sequence==Sequence::BlackInsertion&&settings.guardLevel==0;
+                ImGui::BeginDisabled(es.scheduled&&!es.extendedCadence);
+                if(ImGui::Checkbox("Black frame insertion",&bfi)){setBlackFrameInsertion(settings,bfi);changed=true;}
+                ImGui::EndDisabled();
                 ImGui::SameLine();ImGui::TextDisabled("%s",sequencePattern(settings.sequence).c_str());
             };
             bool emitterOnline=es.state==EmitterState::Ready||es.state==EmitterState::Running;
@@ -699,7 +805,6 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 }
             };
             if(fullscreenMode){
-                if(controlMenu.visible()&&!smoke)SetWindowPos(controlWindow,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
                 ImGui::Button("FULLSCREEN CONTROLS  |  drag to move",{-1,0});
                 static POINT dragOrigin{};static RECT dragWindow{};
                 if(ImGui::IsItemActivated()){GetCursorPos(&dragOrigin);GetWindowRect(controlWindow,&dragWindow);}
@@ -730,6 +835,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             ImGui::SameLine();if(ImGui::Button("Stop",{80*dpi,32*dpi}))stopOutput();ImGui::EndDisabled();
             ImGui::SameLine();ImGui::BeginDisabled(!rs.running||rs.preview);if(ImGui::Button("Re-lock sync"))resyncRequested=true;ImGui::EndDisabled();
             ImGui::TextDisabled(fullscreenMode?"Configure or disable fullscreen keys in Shortcuts.":settings.lcd.enabled?"Arrows: settle / duration   Shift: fine   S: sweep   Enter: keep   X: swap   Esc: stop":"Arrows: phase / duration   Shift: fine   X: swap   Esc: stop");
+            ImGui::TextDisabled("Fullscreen 3D stays above applications; input passes through to them.");
             ImGui::Separator();
             auto drawGamesAndInput=[&]{
                     label("INPUT / GAMES");
@@ -882,6 +988,21 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                         ImGui::EndDisabled();
                         paragraph("Start game 3D presents over the game and keeps its controls focused. Use windowed or borderless mode on the selected output display.");
                     }
+                    // A recorder cannot capture a frame-sequential display: it samples one eye,
+                    // or a black slot, per captured frame, which is the sideways jumping and the
+                    // flashing. The stream view holds one eye steady in a window of its own.
+                    if(sourceKind!=3){
+                        ImGui::Separator();label("SCREEN SHARE / RECORDING");
+                        if(ImGui::Checkbox("2D stream view",&streamView))runAction([&]{
+                            if(!streamView){stopStreamView();streamStatus="Off.";updateCaptureExclusion();}
+                            else if(presenter.status().running&&!presenter.status().preview)startStreamView();
+                            else streamStatus="Armed. It opens with the next fullscreen or game 3D output.";});
+                        ImGui::SameLine();if(ImGui::Checkbox("Cover the display",&streamMirror)&&streamWindow)runAction(startStreamView);
+                        ImGui::SameLine();if(ImGui::Checkbox("Right eye",&streamRightEye)&&streamWindow)presenter.streamTo(streamWindow,streamRightEye);
+                        paragraph(streamStatus.c_str());
+                        if(rs.streaming)ImGui::TextDisabled("Stream view pictures shown: %llu",rs.streamFrames);
+                        else if(!rs.streamMessage.empty())ImGui::TextColored({1,.45f,.3f,1},"%s",rs.streamMessage.c_str());
+                    }
                     ImGui::BeginDisabled(gamePrepared||displays.empty()||sourceKind==0||((sourceKind==2||sourceKind==5)&&!sourceConfig.window)||(sourceKind==5&&!direct::available(sourceConfig.directChannel)));if(ImGui::Button(sourceKind==5?"Start game capture":"Start source"))runAction([&]{update();source.start(sourceConfig,displays[displayIndex].adapterLuid);changed=true;});ImGui::EndDisabled();ImGui::SameLine();if(ImGui::Button("Stop capture / source")){cancelPreparation();if(outputGame)stopOutput();source.stop();}
                     if(ImGui::Button("Use built-in patterns")){cancelPreparation();if(outputGame)stopOutput();source.stop();sourceKind=0;sourceConfig.kind=SourceKind::Patterns;changed=true;}if(ss.running||ss.frames||sourceKind!=5)paragraph(ss.message.c_str());
                     if(sourceKind==5)ImGui::Text("Received stereo pairs: %llu",ss.frames);
@@ -1024,10 +1145,10 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 }
                 if(ImGui::BeginTabItem("Panel",nullptr,requestedTool==3||(smoke&&wcsstr(GetCommandLineW(),L"--panel-smoke"))?ImGuiTabItemFlags_SetSelected:0)){
                     label("LCD / QLED: PANEL DRIVE");
-                    paragraph("For LCD/QLED, begin with Preload: give each eye an extra refresh to settle, then sweep phase while checking top, middle and bottom through each lens.");
+                    paragraph("These experiments select manual phase/shutter timing. For LCD/QLED, compare Black reset with Preload while checking top, middle and bottom through each lens. No panel response time is assumed.");
                     ImGui::BeginDisabled(es.scheduled&&!es.extendedCadence);
                     const char* driveNames[]{"Direct L R","Black reset L B R B","Neutral reset L G R G","Preload L L R R"};
-                    for(int i=0;i<4;i++){if(ImGui::Button(driveNames[i]))runAction([&]{applyPanelDrive(settings,PanelDrive(i));compared.clear();changed=true;notice="Panel experiment selected. Shutter starts at 1500 us (or emitter limit); phase is retained. Measure both lenses before judging separation.";});}
+                    for(int i=0;i<4;i++){if(ImGui::Button(driveNames[i]))runAction([&]{applyPanelDrive(settings,PanelDrive(i));lcdUi.sweeping=false;compared.clear();changed=true;notice="Manual panel timing selected. Shutter starts at 1500 us (or emitter limit); manual phase is retained. Measure both lenses before judging separation.";});}
                     ImGui::EndDisabled();
                     ImGui::Text("Display %.3f Hz | %.2f new frames/eye/s | emitter %.3f Hz",settings.refresh,settings.refresh/cycleLength(settings.sequence),sequenceEmitterHz(settings.refresh,settings.sequence));
                     paragraph("Preload sends the same eye twice, holding the captured stereo pair constant. The emitter trigger is on the second refresh, leaving the first for settling. At 240 Hz this gives 60 new frames/eye/s; at 120 Hz it gives 30. Longer runs are under Advanced > Sequence.");
@@ -1045,8 +1166,8 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                     if(!opticalKey.empty()&&opticalKey!=key){opticalMarks.fill(0);opticalKey.clear();}
                     paragraph("Keep shutter width fixed. Stop the sweep and let the image settle before marking. For each lens and screen third, mark the start and end of one contiguous acceptable phase range while increasing phase. End below start means it crosses zero. Both desired-image visibility and ghosting matter. The intersection uses your observations, not guessed panel timings.");
                     const char* rows[]{"Left: top third","Left: middle third","Left: bottom third","Right: top third","Right: middle third","Right: bottom third"};
-                    bool canMark=(!es.scheduled||es.extendedCadence)&&rs.running&&!rs.preview&&!outputEmbedded&&!rs.occluded&&settings.leftUs==settings.rightUs&&settings.rightOffsetUs==0&&!paused&&!sweep.active&&sourceKind==0&&step==6&&settings.bandHeight==1&&settings.blackFloor==0&&!settings.cancelCrosstalk;
-                    if(!canMark)ImGui::TextDisabled("Marking needs fullscreen stereo (not embedded preview), equal shutters, zero eye offset, nine-row targets, full area, no floor/subtraction, and a stopped sweep.");
+                    bool canMark=!settings.lcd.enabled&&(!es.scheduled||es.extendedCadence)&&rs.running&&!rs.preview&&!outputEmbedded&&!rs.occluded&&settings.leftUs==settings.rightUs&&settings.rightOffsetUs==0&&!paused&&!sweep.active&&sourceKind==0&&step==6&&settings.bandHeight==1&&settings.blackFloor==0&&!settings.cancelCrosstalk;
+                    if(!canMark)ImGui::TextDisabled("Marking needs manual timing, fullscreen stereo (not embedded preview), equal shutters, zero eye offset, nine-row targets, full area, no floor/subtraction, and a stopped sweep.");
                     for(size_t i=0;i<opticalWindows.size();i++){
                         ImGui::PushID(int(i));ImGui::TextUnformatted(rows[i]);ImGui::SameLine();ImGui::BeginDisabled(!canMark);
                         auto mark=[&](bool end){
@@ -1223,7 +1344,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                         if(ImGui::Button("Reset timing"))runAction(resetTiming);
                         if(es.state==EmitterState::Simulated)ImGui::TextDisabled("Simulated emitter: timing controls change nothing physical.");
                         else if(!es.scheduled&&emitterOnline){auto sch=nvidiaSchedule(sequenceEmitterHz(settings.refresh,settings.sequence),settings.phaseUs);ImGui::TextDisabled("Emitter path: eye command at the predicted vblank, boundary %.0f us, X delay %.0f us; %llu timing writes, %llu eye commands.",sch.boundaryUs,sch.delayUs,es.timingWrites,es.commands);}
-                        {bool bfi=settings.sequence==Sequence::BlackInsertion;ImGui::BeginDisabled(es.scheduled&&!es.extendedCadence);if(ImGui::Checkbox("Software black frame insertion (Left / Black / Right / Black)",&bfi)){settings.sequence=bfi?Sequence::BlackInsertion:Sequence::Alternating;settings.guardLevel=0;changed=true;}ImGui::EndDisabled();
+                        {bool bfi=settings.sequence==Sequence::BlackInsertion&&settings.guardLevel==0;ImGui::BeginDisabled(es.scheduled&&!es.extendedCadence);if(ImGui::Checkbox("Software black frame insertion (Left / Black / Right / Black)",&bfi)){setBlackFrameInsertion(settings,bfi);changed=true;}ImGui::EndDisabled();
                          if(bfi)paragraph("Every second refresh is black. Each eye gets refresh/4 new images per second: 30 at 120 Hz, 60 at 240 Hz. LCD pixels can retain the previous eye during reset frames; compare Preload under Panel experiments. Brightness and separation depend on panel response and shutter timing. Software black frames do not switch off the backlight.");
                          else if(settings.sequence!=Sequence::Alternating)ImGui::TextDisabled("Sequence %s (Advanced > Sequence): %.0f new frames per eye per second.",sequencePattern(settings.sequence).c_str(),settings.refresh/cycleLength(settings.sequence));}
                         {bool cancel=settings.cancelCrosstalk;ImGui::BeginDisabled(settings.guardLevel>0);if(ImGui::Checkbox("Legacy ghost subtraction (experimental, C)",&cancel)){settings.cancelCrosstalk=cancel;changed=true;}ImGui::EndDisabled();
@@ -1295,7 +1416,15 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             }
             // Exercise the actual child-window presenter without USB writes or profile edits.
             // The production button passes sideBySide=false to enable frame-sequential 3D.
-            if(smoke&&!smokePreviewStarted&&qpc()-smokeStart>1){if(gameOverlaySmoke){RECT rect{};GetClientRect(controlWindow,&rect);MapWindowPoints(controlWindow,nullptr,reinterpret_cast<POINT*>(&rect),2);startOutput(true,false,&rect,false,true);outputGame=controlWindow;}else if(fullscreenSmoke)startFullscreenOutput();else startOutput(true,true);smokePreviewStarted=true;settings.convergence=.01f;settings.phaseUs+=100;update();}
+            if(smoke&&!smokePreviewStarted&&qpc()-smokeStart>1){
+                if(gameOverlaySmoke){
+                    const auto& area=displays[displayIndex].rect;
+                    smokeCapture.window=CreateWindowExW(0,L"STATIC",L"Hidden captured game fixture",WS_POPUP,area.left+40,area.top+40,640,360,nullptr,nullptr,instance,nullptr);
+                    if(!smokeCapture.window)throw std::runtime_error("Cannot create captured-game test window.");
+                    sourceKind=2;sourceConfig.window=smokeCapture.window;startFullscreenOutput();
+                }else if(fullscreenSmoke)startFullscreenOutput();else startOutput(true,true);
+                smokePreviewStarted=true;settings.convergence=.01f;settings.phaseUs+=100;update();
+            }
             if(smoke&&settings.lcd.enabled&&smokePreviewStarted&&!smokePreviewVerified&&qpc()-smokeStart>1.8){
                 HWND original=outputWindow;
                 for(int i=0;i<10;++i){
@@ -1311,9 +1440,20 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 if((!fullscreenSmoke&&!gameOverlaySmoke&&(GetParent(outputWindow)!=controlWindow||!EqualRect(&actual,&previewRect)))||(fullscreenSmoke&&!fullscreenMode)||!test.running||emitter.status().commands!=0)throw std::runtime_error("Embedded live preview regression: window placement, presenter startup or USB isolation failed: "+test.message);
                 if(gameOverlaySmoke){
                     const auto overlayStyle=GetWindowLongPtrW(outputWindow,GWL_EXSTYLE);
-                    if(!outputPassThrough||outputGame!=controlWindow||GetParent(outputWindow)||(overlayStyle&(WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED))!=(WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED))throw std::runtime_error("Game output must remain a separate nonactivating click-through window.");
-                    RECT expected{},actualGame{};GetClientRect(controlWindow,&expected);MapWindowPoints(controlWindow,nullptr,reinterpret_cast<POINT*>(&expected),2);GetWindowRect(outputWindow,&actualGame);
-                    if(!EqualRect(&expected,&actualGame))throw std::runtime_error("Game output does not cover its client area.");
+                    if(!outputPassThrough||outputGame!=smokeCapture.window||GetParent(outputWindow)||(overlayStyle&(WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED))!=(WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED))throw std::runtime_error("Game output must remain a separate nonactivating click-through window.");
+                    RECT expected=displays[displayIndex].rect,actualGame{};GetWindowRect(outputWindow,&actualGame);
+                    if(!EqualRect(&expected,&actualGame))throw std::runtime_error("Game output does not cover the selected display.");
+                    if(!IsWindowVisible(outputWindow))throw std::runtime_error("Unfocused/hidden source hid the stereo output.");
+                    BYTE alpha=0;DWORD flags=0;COLORREF key=0;
+                    if(!GetLayeredWindowAttributes(outputWindow,&key,&alpha,&flags)||alpha!=255||flags!=LWA_ALPHA)
+                        throw std::runtime_error("Captured-game fullscreen bypassed overlay compatibility.");
+                    // F11 returning through the embedded preview used to lose
+                    // the game routing. Exercise the production path both ways.
+                    startOutput(true,true);
+                    if(outputPassThrough||outputGame)throw std::runtime_error("Embedded preview retained the captured game's overlay.");
+                    startFullscreenOutput();
+                    if(!outputPassThrough||outputGame!=smokeCapture.window||(GetWindowLongPtrW(outputWindow,GWL_EXSTYLE)&WS_EX_NOACTIVATE)==0)
+                        throw std::runtime_error("F11 round trip lost captured-game input passthrough.");
                 }
                 if(sourceKind==3){
                     if(fullscreenSmoke){
@@ -1329,7 +1469,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                         BYTE alpha=0;DWORD flags=0;COLORREF key=0;
                         if(!screenOutput||!outputPassThrough||GetParent(outputWindow)||(inputStyle&required)!=required||
                            !GetLayeredWindowAttributes(outputWindow,&key,&alpha,&flags)||alpha!=255||!(flags&LWA_ALPHA))
-                            throw std::runtime_error("AI desktop fullscreen must remain an opaque, nonactivating click-through overlay.");
+                            throw std::runtime_error("AI desktop fullscreen must preserve overlay compatibility and input passthrough.");
                         RECT rect{};GetWindowRect(outputWindow,&rect);
                         if(!EqualRect(&rect,&displays[displayIndex].rect))throw std::runtime_error("AI desktop overlay must cover the output display.");
                         for(const POINT point:{POINT{rect.left+32,rect.top+32},POINT{(rect.left+rect.right)/2,(rect.top+rect.bottom)/2}})
@@ -1351,7 +1491,17 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
                 }
                 smokePreviewVerified=true;
             }
-            ImGui::End();ImGui::Render();ui.bind();float clear[]{.035f,.047f,.07f,1};ui.context->ClearRenderTargetView(ui.target.Get(),clear);ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            ImGui::End();ImGui::Render();
+            // Keep hotkeys, capture, logging and window-order maintenance alive while
+            // controls are hidden, without queueing an invisible GPU draw/present
+            // alongside the refresh-critical stereo output.
+            if(!smoke&&!IsWindowVisible(controlWindow)){
+                // DXGI may synchronously message an output HWND on this thread.
+                // Wake for those messages instead of sleeping through a refresh.
+                MsgWaitForMultipleObjectsEx(0,nullptr,8,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+                continue;
+            }
+            ui.bind();float clear[]{.035f,.047f,.07f,1};ui.context->ClearRenderTargetView(ui.target.Get(),clear);ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
             if(fullscreenSmoke&&smokePreviewVerified)saveSurfacePng(ui,workspace()/L"reports/ui-fullscreen-controls.png");
             if(smoke && !smokeSnapshot && qpc()-smokeStart>.75){
                 if(prepareSmoke){

@@ -39,7 +39,7 @@
   <div class="mast">
     <div class="badge">PORTABLE WINDOWS RELEASE</div>
     <h1>Vision Restoration</h1>
-    <div class="sub">Quick Start · Version 0.1.1</div>
+    <div class="sub">Quick Start · Version 0.2.0</div>
   </div>
 
   <div class="box warn">
@@ -153,6 +153,10 @@
     <li>Connect directly rather than through a hub, then press <strong>Refresh USB</strong>.</li>
   </ul>
 
+  <h2>RP2040 detected but glasses do not sync</h2>
+  <p>For the confirmed 240 Hz OLED setup, enable <strong>Black frame insertion</strong> (Left / Black / Right / Black). Ordinary Left / Right at 240 Hz is a different shutter cadence. Preserve your calibrated phase, shutter width and eye order.</p>
+  <p>Close the app and run <code>vision_rp2040_probe.exe --clock</code> to check USB timing. A successful clock check does not measure IR or lens response. The RP2040 uses the included UF2, not NVIDIA firmware.</p>
+
   <h2>A game fix is rejected</h2>
   <ul>
     <li>Select the actual game executable and close the game first.</li>
@@ -160,6 +164,9 @@
     <li>Disconnect Vision Restoration before changing the community fix.</li>
     <li>Do not manually overwrite files in <code>VisionRestoration.OutputBackup</code>.</li>
   </ul>
+
+  <h2>Recording and screen sharing</h2>
+  <p>Use the <strong>2D stream view</strong> to capture a steady single eye rather than alternating eyes and black frames. The stream is SDR. AI desktop already hides its stereo overlay from capture, so screen sharing shows the ordinary desktop.</p>
 
   <h2>Diagnostics</h2>
   <p>The portable folder keeps application diagnostics under <code>reports</code>. A connected game writes <code>VisionStereo11.log</code> in its own executable directory. Reports can contain hardware, display, timing, and local path information; review them before posting publicly.</p>

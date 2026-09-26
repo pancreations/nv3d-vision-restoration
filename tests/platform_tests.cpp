@@ -41,6 +41,7 @@ int main(){
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 presenter.stop();
                 require(!presenter.status().running,"Presenter remained running after stop");
+                require(presenter.status().resyncs==0,"A DXGI statistics reset must not request an emitter resync");
             }
             const double elapsed=qpc()-start;
             std::cout<<"Three renderer starts/stops: "<<elapsed<<" s\n";
@@ -110,6 +111,28 @@ int main(){
         context->Unmap(staging.Get(),0);check(key->ReleaseSync(0),"Consumer release");
         require(intact,"Retained pair pixels changed after source restart");
         Emitter simulated;Settings settings;simulated.configure(settings);simulated.connect({}, {},true);auto until=qpc()+2;while(simulated.status().state!=EmitterState::Simulated && qpc()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));require(simulated.status().state==EmitterState::Simulated,"Simulator startup");simulated.submit(Eye::Left,qpc()+.03);settings.phaseUs=500;simulated.configure(settings);until=qpc()+2;while(simulated.status().commands==0&&qpc()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));require(simulated.status().commands>0,"Live timing edit preserves queued eye trigger");simulated.suspend();double stopped=qpc();simulated.disconnect();require(qpc()-stopped<1,"Simulator shutdown was not bounded");
+        Emitter queued;queued.configure(Settings{});queued.connect({}, {},true);until=qpc()+2;
+        while(queued.status().state!=EmitterState::Simulated&&qpc()<until)Sleep(2);
+        require(queued.status().state==EmitterState::Simulated,"Queue simulator startup");
+        const double firstDeadline=qpc()+.1;
+        for(unsigned i=0;i<maxPresentationQueueDepth;++i){
+            const auto eye=i%2?Eye::Right:Eye::Left;const double deadline=firstDeadline+i*.01;
+            queued.submit(eye,deadline);
+            // A recomputed anchor can repeat a refresh at a slightly different
+            // fitted timestamp. It must not produce another firmware trigger.
+            queued.submit(eye,deadline);
+            queued.submit(eye,deadline+.00002);
+            queued.submit(eye,deadline-.00002);
+        }
+        until=qpc()+2;while(queued.status().commands<maxPresentationQueueDepth&&qpc()<until)Sleep(2);
+        require(queued.status().commands==maxPresentationQueueDepth&&queued.status().late==0,"Larger display queue lost a scheduled shutter command");
+        require(queued.status().repeatedCommands==3*maxPresentationQueueDepth,"Repeated refreshes reached the simulated emitter queue");
+        queued.submit(Eye::Right,firstDeadline+(maxPresentationQueueDepth-1)*.01+.00003);
+        require(queued.status().repeatedCommands==3*maxPresentationQueueDepth+1,"Duplicate rejection must also cover a command already sent");
+        queued.suspend();queued.submit(Eye::Left,qpc()+.03);
+        until=qpc()+2;while(queued.status().commands==maxPresentationQueueDepth&&qpc()<until)Sleep(2);
+        require(queued.status().commands==maxPresentationQueueDepth+1,"Explicit resync must start a fresh command cadence");
+        queued.disconnect();
         Emitter stale;stale.configure(Settings{});stale.connect({}, {},true);until=qpc()+2;
         while(stale.status().state!=EmitterState::Simulated&&qpc()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));
         require(stale.status().state==EmitterState::Simulated,"Late-trigger simulator startup");

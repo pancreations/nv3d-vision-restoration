@@ -12,4 +12,10 @@ py -3 -m pip install --target build/release-python Markdown==3.7
 
 Microsoft Edge generates both PDFs in headless mode. The README PDF is generated from the current README.md; the quick-start PDF comes from docs/portable-quick-start.html. Packaging builds the app, runs CTest, builds both integration architectures and RP2040 firmware, uses an explicit file allowlist, and verifies an extracted copy before producing the ZIP. `-SkipBuild` is for an already-built and tested tree only.
 
-Publish only the public portable ZIP, the two PDFs, and public SHA256SUMS.txt from dist. Never upload the PRIVATE personal-assets archive or private hash manifest. Mark releases experimental/prerelease while the documented game and optical limitations remain. Commit the matching source and release notes before creating the release tag.
+Publish only the public portable ZIP, the two PDFs, and public SHA256SUMS.txt from dist. Never upload the PRIVATE personal-assets archive, private hash manifest, local experiment packages, recordings or saved profiles. Mark releases experimental/prerelease while the documented game and optical limitations remain. Commit the matching source and release notes before creating the release tag. Upload assets to a draft, verify their names and checksums, then publish the completed release.
+
+The portable allowlist includes `vision_rp2040_probe.exe` and the current release
+notes. Close the running app before USB probing or replacing the local build.
+Keep the user's existing profiles; the public archive contains no personal
+calibration values. For the confirmed OLED setup, 240 Hz BFI means
+Left / Black / Right / Black, with 120 eye openings per second.

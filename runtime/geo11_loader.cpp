@@ -14,6 +14,16 @@ void initialize(){std::call_once(once,[]{
     wchar_t exe[MAX_PATH];GetModuleFileNameW(nullptr,exe,MAX_PATH);auto dir=std::filesystem::path(exe).parent_path();
     output=LoadLibraryW((dir/L"VisionStereo11.dll").c_str());if(!output)return;
     auto prepare=reinterpret_cast<HRESULT(WINAPI*)()>(GetProcAddress(output,"VisionStereoBootstrap"));if(!prepare||FAILED(prepare()))return;
+    // Geo11 forces load_library_redirect=0 whenever proxy_d3d11 is set, and this
+    // adapter always sets it. That redirect is what normally makes the game load
+    // Geo11's NVAPI wrapper instead of the driver's; current drivers dropped 3D
+    // Vision, so without the wrapper Geo11 cannot enter Direct Mode and the game
+    // renders mono. Load the wrapper by full path before Geo11 initializes: it
+    // then finds its own module, and later LoadLibrary("nvapi.dll") calls resolve
+    // to this already-loaded module by base name.
+    const wchar_t* wrapper=sizeof(void*)==8?L"nvapi64.dll":L"nvapi.dll";
+    std::error_code wrapperError;
+    if(std::filesystem::exists(dir/wrapper,wrapperError))LoadLibraryW((dir/wrapper).c_str());
     geo=LoadLibraryW((dir/L"VisionGeo11.dll").c_str());
     // Also cover games that created their DXGI factory before their device.
     // Geo11 now attaches around the output hooks installed by prepare().

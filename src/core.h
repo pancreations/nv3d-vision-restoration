@@ -136,6 +136,9 @@ struct Settings {
 };
 struct Slot { Eye eye; bool trigger; bool pairBoundary; };
 enum class PanelDrive { Direct, BlackGuard, NeutralGuard, Preload };
+// The everyday BFI controls always request black reset frames, including when
+// returning from a neutral-reset experiment. Preserve the chosen timing mode.
+void setBlackFrameInsertion(Settings& settings, bool enabled);
 // Explicit experiments, independent of the approximate illumination model.
 void applyPanelDrive(Settings& settings, PanelDrive drive);
 struct PhaseWindow { double beginUs=0, endUs=0; };
@@ -148,11 +151,15 @@ unsigned cycleLength(Sequence sequence);
 Slot sequenceSlot(Sequence sequence, uint64_t index, bool swap);
 // DXGI reports the actual display refresh, including composed presentation.
 uint64_t refreshForPresent(uint32_t present, uint32_t observedPresent, uint64_t observedRefresh);
-// Only composed statistics need the two-report filter for DWM's one-refresh
-// wobble. Direct flip must follow each observed slip, even during a burst.
+inline constexpr unsigned maxPresentationQueueDepth=8;
+inline constexpr unsigned emitterCommandQueueCapacity=maxPresentationQueueDepth+2;
+// Reserve about 25 ms of completed frames at the actual display refresh rate.
+// A fixed three-frame queue shrinks to only 12.5 ms at 240 Hz.
+unsigned presentationQueueDepth(double refresh);
+// Follow the actual displayed refresh on every new present. Composition does
+// not change the meaning of PresentRefreshCount or justify filtering slips.
 struct PresentRefreshAnchor {
     uint32_t present=0;uint64_t refresh=0;bool valid=false;
-    unsigned confirmations=0;int64_t candidate=0;
     void reset(){*this={};}
     void observe(uint32_t id,uint64_t displayedRefresh,bool composed);
 };
@@ -259,11 +266,16 @@ struct TimingTracker {
     unsigned samples = 0;
     double jitterRmsUs = 0, jitterMaxUs = 0, lastResidualUs = 0; // sample minus fit
     bool observe(uint64_t refresh, double qpcSeconds);
+    // Keep a running presentation clock through isolated bad statistics. Eight
+    // consistent samples must establish a new clock before it replaces the old one.
+    bool observeContinuous(uint64_t refresh, double qpcSeconds);
+    uint64_t rejectedSamples = 0, corrections = 0;
     double predict(uint64_t refresh) const;
     void reset();
 private:
     static constexpr unsigned window = 240;
     std::vector<std::pair<uint64_t,double>> history_;
+    std::vector<std::pair<uint64_t,double>> candidate_;
     double sumResidualSq_ = 0; unsigned residualCount_ = 0;
     void refit();
 };

@@ -6,8 +6,18 @@
 #include <stdexcept>
 
 namespace vision {
+void setBlackFrameInsertion(Settings& s, bool enabled) {
+    s.sequence=enabled?Sequence::BlackInsertion:Sequence::Alternating;
+    s.guardLevel=0;
+    s.validated=s.glassesConfirmed=s.eyeConfirmed=false;
+}
+
 void applyPanelDrive(Settings& s, PanelDrive drive) {
     Settings next=s;
+    // These experiments are calibrated with manual phase and shutter below.
+    // Leaving a guarded aperture enabled makes the emitter ignore those values
+    // and can reject a new sequence using the previous aperture's bounds.
+    next.lcd.enabled=false;
     next.guardLevel=0;
     switch(drive) {
     case PanelDrive::Direct: next.sequence=Sequence::Alternating; break;
@@ -57,7 +67,7 @@ std::string opticalCalibrationKey(const Settings& s) {
      <<' '<<s.leftUs<<' '<<s.rightUs<<' '<<s.rightOffsetUs<<' '<<s.bandHeight<<' '<<s.bandCenter
      <<' '<<s.guardLevel<<' '<<s.blackFloor<<' '<<s.imageGain<<' '<<s.peakNits<<' '<<s.cancelCrosstalk<<' '<<s.cancelStrength
      <<' '<<int(s.illumination)<<' '<<s.strobeStartUs<<' '<<s.strobeLengthUs
-     <<' '<<s.panelResponseUs<<' '<<s.panelRiseUs<<' '<<s.panelScanUs<<' '<<s.scanStartUs;
+     <<' '<<s.panelResponseUs<<' '<<s.panelRiseUs<<' '<<s.panelScanUs<<' '<<s.scanStartUs<<' '<<s.lcd.enabled;
     return o.str();
 }
 }

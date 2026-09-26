@@ -90,17 +90,17 @@
     <a class="btn" data-repo="" href="#">Source code on GitHub</a>
   </div>
   <div class="status">
-    <p><strong>Personal project, proof of concept. No release.</strong></p>
+    <p><strong>Personal project, experimental portable release.</strong></p>
     <p><strong>Working:</strong> side-by-side 3D captured into the app from a game window, a side-by-side video or ReShade, on a 240&nbsp;Hz OLED monitor.</p>
     <p><strong>Not working yet:</strong> the in-game hook has never worked. LCD, QLED and Mini-LED displays show ghosting and crosstalk.</p>
   </div>
 </header>
 
-<div class="wrap status"><p><strong>v0.1.1 experimental prerelease:</strong> <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.1.1">Download the portable ZIP and updated README PDF</a>.</p><p>Includes presentation timing recovery, game overlay and AI desktop responsiveness fixes. Resident Evil 2 and Metal Gear Solid V still have unresolved failures and are not supported games. Classic NVIDIA stereo rendering is not supplied by this app.</p></div>
+<div class="wrap status"><p><strong>v0.2.0 experimental prerelease:</strong> <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.2.0">Download the portable ZIP and updated README PDF</a>.</p><p>Includes continuous presentation-clock recovery, fullscreen/input fixes, a steady 2D stream view for recording, BFI controls and RP2040 240 Hz BFI setup guidance. Resident Evil 2 and Metal Gear Solid V still have unresolved failures and are not supported games. Classic NVIDIA stereo rendering is not supplied by this app.</p></div>
 <section id="status">
   <h2>What works today</h2>
   <h3>3D sources</h3>
-  <p class="intro" style="margin-top:0">Only side-by-side input works: the game or video has to produce its own left and right images. Vision Restoration does not add 3D to games.</p>
+  <p class="intro" style="margin-top:0">Window capture accepts existing side-by-side or top/bottom stereo. The shared Geo11 adapter receives rendered eye pairs from compatible fixes; AI desktop separately estimates depth from 2D content.</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Source</th><th>Status</th></tr></thead>
@@ -108,14 +108,14 @@
         <tr><td>Window capture of a game rendering side-by-side 3D (proven with Dolphin set to side-by-side)</td><td><span class="pill ok">Working</span></td></tr>
         <tr><td>Window capture of any side-by-side 3D video</td><td><span class="pill ok">Working</span></td></tr>
         <tr><td><a href="USAGE.html#vlc-stereo-movies">Direct VLC 3.x stereo movie playback (SBS or top/bottom)</a></td><td><span class="pill">SDR decoding tested; optical validation pending</span></td></tr>
-        <tr><td>ReShade capture: a ReShade add-on sends the game's side-by-side frames to the app over Spout</td><td><span class="pill ok">Working</span></td></tr>
         <tr><td>In-game hook</td><td><span class="pill bad">Broken, never worked</span></td></tr>
-        <tr><td>geo-11</td><td><span class="pill">Untested</span></td></tr>
+        <tr><td>Shared Geo11 adapter (x86/x64 DX11)</td><td><span class="pill">Experimental; renderer/transport tests pass, game failures remain</span></td></tr>
+        <tr><td>AI desktop depth conversion</td><td><span class="pill">Available; optical quality still needs validation</span></td></tr>
         <tr><td>Native stereo 3D games, DirectX 9 / 10, Vulkan</td><td><span class="pill">Not started</span></td></tr>
       </tbody>
     </table>
   </div>
-  <p class="intro" style="margin:1rem 0 2.5rem">The goal is not to add support game by game; the plan is one general hook that works across games. That depends on who joins the project.</p>
+  <p class="intro" style="margin:1rem 0 2.5rem">The shared adapter preserves existing community fixes. Passing renderer and transport tests does not establish compatibility with every game.</p>
 
   <h3>Displays</h3>
   <p class="intro" style="margin-top:0">The glasses close each lens while the other eye's image is on screen. It only looks clean if the screen has fully switched images before the lens opens, so your display's pixel response time decides whether it works.</p>
@@ -124,14 +124,15 @@
       <thead><tr><th>Display</th><th>Status</th><th>Notes</th></tr></thead>
       <tbody>
         <tr><td>OLED at 240&nbsp;Hz</td><td><span class="pill ok">Proven</span></td><td class="note">Clean full-screen 3D through the glasses with software black frame insertion, SDR and HDR.</td></tr>
-        <tr><td>OLED at 100, 120 or 144&nbsp;Hz</td><td><span class="pill">Not proven</span></td><td class="note">Selectable in the app, not confirmed through the glasses.</td></tr>
+        <tr><td>OLED at 120&nbsp;Hz</td><td><span class="pill ok">User confirmed</span></td><td class="note">RP2040 operation confirmed. At 240 Hz, enable BFI for the confirmed cadence.</td></tr>
+        <tr><td>OLED at 100 or 144&nbsp;Hz</td><td><span class="pill">Not proven</span></td><td class="note">Separate optical calibration required.</td></tr>
         <tr><td>LCD, QLED, Mini-LED</td><td><span class="pill bad">Not working yet</span></td><td class="note">Slower pixel response leaves part of the other eye's image on screen: ghosting and crosstalk. Being worked on.</td></tr>
       </tbody>
     </table>
   </div>
 
   <h3 style="margin-top:2.5rem">Graphics cards</h3>
-  <p class="intro" style="margin-top:0">The app uses standard Windows display APIs (Direct3D 11 / DXGI) instead of NVIDIA's stereo driver, so in theory any graphics card can drive it, not only NVIDIA ones. So far it has only been tested with an NVIDIA GPU.</p>
+  <p class="intro" style="margin-top:0">The app uses standard Windows display APIs (Direct3D 11 / DXGI) instead of NVIDIA's stereo driver, so in theory any graphics card can drive it, not only NVIDIA ones. Game trials used an RTX 5070 Ti; output-only tests also pass on AMD Radeon. Other GPU families still need game validation.</p>
 </section>
 
 <section>
@@ -139,8 +140,10 @@
   <div class="grid">
     <div class="card"><h3>Original emitter, no NVIDIA stereo driver</h3><p>Talks to the 3D Vision USB IR emitter over WinUSB and uploads its firmware itself. Your GPU driver stays untouched.</p></div>
     <div class="card"><h3>Frame-sequential output</h3><p>Left / Black / Right / Black with software black frame insertion, SDR and HDR.</p></div>
-    <div class="card"><h3>Side-by-side capture</h3><p>Captures a game window or video player showing side-by-side 3D, or receives frames from ReShade over Spout.</p></div>
+    <div class="card"><h3>Side-by-side capture</h3><p>Captures a game window or video player showing side-by-side or top/bottom 3D.</p></div>
     <div class="card"><h3>Live timing controls</h3><p>Phase, shutter width, phase sweep and eye swap while you watch through the glasses. Saved per display.</p></div>
+    <div class="card"><h3>2D stream view</h3><p>Record or share a steady single-eye SDR picture while the glasses continue receiving stereo.</p></div>
+    <div class="card"><h3>RP2040 DIY emitter</h3><p>Scheduled shutter timing, included open-source firmware, and USB clock diagnostics. OLED 240 Hz BFI reconfirmed.</p></div>
     <div class="card"><h3>Calibration aids</h3><p>Built-in 3D test scene and per-eye test patterns.</p></div>
     <div class="card"><h3>Diagnostics</h3><p>Vblank jitter, present timing and emitter command timing, plus self tests that need no hardware.</p></div>
   </div>
@@ -151,28 +154,29 @@
   <ul class="req">
     <li>Windows 10 or 11, 64-bit</li>
     <li>NVIDIA 3D Vision or 3D Vision 2 glasses</li>
-    <li>NVIDIA 3D Vision USB IR emitter</li>
-    <li>A 240&nbsp;Hz OLED monitor (the only display type proven so far)</li>
+    <li>NVIDIA 3D Vision USB IR emitter or the supported RP2040 DIY emitter</li>
+    <li>An OLED monitor with a calibrated 120 Hz or 240 Hz BFI setup</li>
     <li>A game or video that outputs side-by-side 3D</li>
-    <li>Visual Studio 2022 with <em>Desktop development with C++</em>, and CMake 3.24+</li>
-    <li>Your own copy of NVIDIA's 3D Vision USB driver package (for the emitter firmware)</li>
+    <li>For source builds only: Visual Studio 2022 with <em>Desktop development with C++</em>, and CMake 3.24+</li>
+    <li>For the original NVIDIA emitter: your own copy of its USB driver package for firmware</li>
   </ul>
 </section>
 
 <section id="install">
   <h2>Install and set up the emitter</h2>
-  <p class="intro">There is no release build, so installing means building from source. Third-party libraries and NVIDIA's firmware are not part of this project. You download them yourself from their official sources.</p>
+  <p class="intro">Download the <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.2.0">portable release</a>, extract the entire ZIP, and run <code>Start Vision Restoration.cmd</code>. NVIDIA firmware and AI model weights are separate downloads. Building from source is optional.</p>
   <ol class="steps">
     <li>
-      <h3>Build the app</h3>
+      <h3>Optional: build the app from source</h3>
 <pre><code>git clone <span data-repo-text>&lt;repository URL&gt;</span>.git
-cd nv3d-vision-restoration-project
+cd nv3d-vision-restoration
 .\tools\Get-Dependencies.ps1
 .\build.ps1</code></pre>
-      <p><code>Get-Dependencies.ps1</code> downloads libusb, Dear ImGui, Spout2 and the ReShade headers from their official releases. The app is built to <code>build\bin\Release\VisionRestoration.exe</code>.</p>
+      <p><code>Get-Dependencies.ps1</code> downloads libusb, Dear ImGui, AI runtime components and the ReShade headers from their official releases. The app is built to <code>build\bin\Release\VisionRestoration.exe</code>.</p>
     </li>
     <li>
-      <h3>Get the emitter firmware</h3>
+      <h3>Get the original NVIDIA emitter firmware</h3>
+      <p>RP2040 owners: follow <a href="RP2040.html">the DIY emitter guide</a> instead of these NVIDIA firmware/driver steps.</p>
       <p>The emitter has no permanent firmware. The PC uploads it every time it's plugged in, and that firmware lives inside NVIDIA's driver file <code>nvstusb.sys</code>.</p>
       <ul>
         <li><a href="https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe">Download NVIDIA's standalone 3D Vision USB controller package 390.41 directly</a>. This is not a graphics driver; no Quadro GPU is needed to extract the firmware.</li>
@@ -212,7 +216,7 @@ cd nv3d-vision-restoration-project
       <h3>Show a game or video in 3D</h3>
       <ul>
         <li>Set the game or video player to output <strong>side-by-side</strong> 3D (in Dolphin: Graphics &gt; Stereoscopic 3D Mode = Side-by-Side).</li>
-        <li>In <em>Sources &amp; games</em>, pick its window with window capture, or install the <code>VisionStereoSpout.addon64</code> ReShade add-on in the game and pick its Spout sender.</li>
+        <li>In <em>Input/Games</em>, choose <strong>Capture window</strong>, select its window and the matching stereo layout. Existing Geo11 fixes use the separate <strong>Connect game / Prepare game</strong> workflow.</li>
       </ul>
     </li>
   </ol>

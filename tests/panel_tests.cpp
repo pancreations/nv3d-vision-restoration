@@ -7,6 +7,27 @@ using namespace vision;
 static void require(bool b,const char* m){if(!b)throw std::runtime_error(m);}
 template<class F>static void rejects(F f){bool threw=false;try{f();}catch(const std::exception&){threw=true;}require(threw,"Expected rejection");}
 int main(){try{
+    // Returning from gray reset through either BFI control must actually send
+    // black. Keep the proven OLED timing and explicitly chosen LCD aperture.
+    for(bool guarded:{false,true})for(bool enabled:{false,true}){
+        Settings s;s.refresh=239.991;s.phaseUs=2618;s.leftUs=s.rightUs=4501;
+        s.lcd.enabled=guarded;s.guardLevel=.5f;s.sequence=Sequence::BlackInsertion;
+        s.validated=s.glassesConfirmed=s.eyeConfirmed=true;auto aperture=s.lcd;
+        setBlackFrameInsertion(s,enabled);
+        require(s.guardLevel==0&&s.sequence==(enabled?Sequence::BlackInsertion:Sequence::Alternating),"BFI toggle must clear neutral reset");
+        require(s.phaseUs==2618&&s.leftUs==4501&&s.rightUs==4501&&s.lcd==aperture,"BFI toggle preserves calibration and chosen timing mode");
+        require(!s.validated&&!s.glassesConfirmed&&!s.eyeConfirmed,"Changed sequence invalidates optical confirmation");
+    }
+    // A valid BFI aperture can be longer than direct/preload allows. Selecting
+    // a manual experiment must not validate or drive that stale aperture.
+    for(auto drive:{PanelDrive::Direct,PanelDrive::BlackGuard,PanelDrive::NeutralGuard,PanelDrive::Preload}){
+        Settings s;s.refresh=240;s.sequence=Sequence::BlackInsertion;s.lcd.enabled=true;
+        s.lcd.settleUs=5000;s.lcd.durationUs=750;s.lcd.phaseUs=250;
+        validate(s);auto previous=s.lcd;applyPanelDrive(s,drive);validate(s);
+        require(!s.lcd.enabled,"Manual panel experiments must control the active emitter timing");
+        previous.enabled=false;require(s.lcd==previous,"Retain saved aperture values for explicit reuse");
+        require(s.leftUs==1500&&s.rightUs==1500,"Manual probe duration is applied independently of old aperture");
+    }
     for(double hz:{120.,144.,240.})for(auto drive:{PanelDrive::Direct,PanelDrive::BlackGuard,PanelDrive::NeutralGuard,PanelDrive::Preload}){
         Settings s;s.refresh=hz;s.panelResponseUs=7311;s.panelRiseUs=2719;s.cancelCrosstalk=true;s.blackFloor=.1f;s.imageGain=4;
         applyPanelDrive(s,drive);validate(s);
@@ -28,6 +49,7 @@ int main(){try{
     s.leftUs+=1;require(opticalCalibrationKey(s)!=key,"A new shutter invalidates optical marks");s=Settings{};s.guardLevel=.5f;require(opticalCalibrationKey(s)!=key,"Reset invalidates optical marks");
     s=Settings{};s.displayId="other";require(opticalCalibrationKey(s)!=key,"Display invalidates optical marks");
     s=Settings{};s.hdr=true;require(opticalCalibrationKey(s)!=key,"HDR invalidates optical marks");
+    s=Settings{};s.lcd.enabled=true;require(opticalCalibrationKey(s)!=key,"Switching timing modes invalidates manual phase marks");
     s=Settings{};s.guardLevel=std::numeric_limits<float>::quiet_NaN();rejects([&]{validate(s);});s.guardLevel=1.1f;rejects([&]{validate(s);});s.guardLevel=-.1f;rejects([&]{validate(s);});
     std::array<PhaseWindow,6> ranges{{{100,600},{200,700},{300,800},{250,600},{350,700},{400,550}}};
     auto common=intersectPhaseWindows(1000,ranges);require(common.size()==1&&common[0].beginUs==400&&common[0].endUs==550,"Both lenses and all thirds must overlap");

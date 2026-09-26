@@ -1,5 +1,11 @@
 # Fullscreen stereo on 120 Hz displays
 
+> Withdrawn Hisense evidence, 2026-09-22: the user explicitly rejects the earlier
+> video-derived response and scan readings below. The numerical Hisense examples
+> and resulting claims about what its panel can do must not be used for calibration.
+> This page is a historical record, not a current setup recipe. Use the exact
+> model's manufacturer specifications; see [the current U6 Pro investigation](HISENSE-U6-BFI.md).
+
 > Audit correction, 2026-09-14: the numerical panel response/scan values and exclusive
 > attribution to the panel below are historical hypotheses, not independently established
 > optical measurements. Successful USB transfers and stable DXGI statistics cannot rule

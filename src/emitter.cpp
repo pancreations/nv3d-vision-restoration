@@ -127,7 +127,22 @@ void Emitter::configure(const Settings& s){validate(s);std::lock_guard lock(mute
     }
     settings_=s;
 }
-void Emitter::submit(Eye eye,double deadline,double framePeriodUs){if(eye==Eye::Black)return;std::lock_guard lock(mutex_);if(status_.state!=EmitterState::Ready && status_.state!=EmitterState::Running && status_.state!=EmitterState::Simulated)return;if(pending_.size()>=4){pending_.erase(pending_.begin());status_.late++;}pending_.push_back(Command{eye,deadline,generation_,framePeriodUs});suspended_=false;cv_.notify_one();}
+void Emitter::submit(Eye eye,double deadline,double framePeriodUs){
+    if(eye==Eye::Black||!std::isfinite(deadline))return;
+    std::lock_guard lock(mutex_);
+    if(status_.state!=EmitterState::Ready&&status_.state!=EmitterState::Running&&status_.state!=EmitterState::Simulated)return;
+    if(deadlineGeneration_!=generation_){deadlineGeneration_=generation_;lastDeadline_=0;}
+    // An anchor correction can select a refresh that was already submitted.
+    // Its fitted timestamp may differ by a few microseconds, so equality alone
+    // does not catch it. Never feed two near-simultaneous eye commands into the
+    // firmware's period lock, including when the first has left the FIFO.
+    const double frameSeconds=std::isfinite(framePeriodUs)&&framePeriodUs>0?framePeriodUs/1e6:1/settings_.refresh;
+    const double minimumSpacing=frameSeconds*(sequenceHold(settings_.sequence)+sequenceBlack(settings_.sequence))*.5;
+    if(lastDeadline_&&deadline-lastDeadline_<minimumSpacing){++status_.repeatedCommands;return;}
+    lastDeadline_=deadline;
+    if(pending_.size()>=emitterCommandQueueCapacity){pending_.erase(pending_.begin());status_.late++;}
+    pending_.push_back(Command{eye,deadline,generation_,framePeriodUs});suspended_=false;cv_.notify_one();
+}
 void Emitter::suspend(){suspended_=true;std::lock_guard lock(mutex_);pending_.clear();++generation_;cv_.notify_one();}
 void Emitter::transfer(std::span<const uint8_t> bytes,uint8_t endpoint,std::stop_token stop){
     struct Completion{bool done=false;libusb_transfer_status status{};int actual=0;};Completion done;

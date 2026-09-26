@@ -4,6 +4,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 using namespace vision;
 static int checks=0;
@@ -55,7 +56,12 @@ int main(){try{
     {Settings s;s.leftUs=250;s.rightUs=3000;applyTimingPreset(s,240);require(s.leftUs==250&&s.rightUs==1500,"IR preset respects minimum shutter duration");rejects([&]{applyTimingPreset(s,90);});require(s.refresh==240,"Unsupported preset leaves settings intact");applyTimingPreset(s,100);require(s.refresh==100&&std::abs(s.leftUs-600)<1e-9&&std::abs(s.rightUs-std::min(3600.0,calibrationMaxShutterUs(100)))<1e-9,"100 Hz preset scales shutter by the frame period");}
     // Recorded display-refresh anchors: queue depth and composition must not
     // invent an extra refresh between an image and its shutter command.
-    for(uint64_t displayedRefresh:{1000ull,1001ull,2005ull})for(uint32_t queued=1;queued<=3;queued++){
+    require(presentationQueueDepth(119.98)==3&&presentationQueueDepth(120)==3,"120 Hz keeps its existing presentation reserve");
+    require(presentationQueueDepth(239.98)==6&&presentationQueueDepth(240)==6,"240 Hz must retain the same time reserve as 120 Hz");
+    require(presentationQueueDepth(144)==4&&presentationQueueDepth(360)==maxPresentationQueueDepth,"Refresh-based queue is bounded");
+    rejects([]{presentationQueueDepth(0);});rejects([]{presentationQueueDepth(std::nan(""));});
+    require(emitterCommandQueueCapacity>maxPresentationQueueDepth,"Every queued eye frame needs space for its shutter command");
+    for(uint64_t displayedRefresh:{1000ull,1001ull,2005ull})for(uint32_t queued=1;queued<=maxPresentationQueueDepth;queued++){
         auto refresh=refreshForPresent(40+queued,40,displayedRefresh);
         require(refresh==displayedRefresh+queued,"Present maps directly to its display refresh");
         require(presentForRefresh(refresh,40,displayedRefresh)==40+queued,"Game and presenter agree on the same image");
@@ -74,10 +80,15 @@ int main(){try{
             require(sequenceSlot(Sequence::BlackInsertion,anchor.refresh+1,false).eye==sequenceSlot(Sequence::BlackInsertion,actual+1,false).eye,"Black insertion follows the corrected refresh");
         }
         anchor.reset();anchor.observe(40,1000,true);
-        for(uint32_t id=41;id<50;++id){anchor.observe(id,1000+(id-40)+(id%2),true);require(anchor.refresh==1000+(id-40),"Composed one-refresh wobble remains filtered");}
-        anchor.observe(50,1011,true);anchor.observe(51,1012,true);require(anchor.refresh==1012,"Persistent composed delay is accepted");
-        anchor.observe(52,1015,false);require(anchor.refresh==1015,"Transition to direct flip uses actual refresh immediately");
-        anchor.observe(52,1016,false);require(anchor.refresh==1015,"Duplicate present feedback is ignored");
+        for(uint32_t id=41;id<50;++id){
+            const uint64_t actual=1000+2*(id-40);
+            anchor.observe(id,actual,true);
+            require(refreshForPresent(id+1,anchor.present,anchor.refresh)==actual+1,"Composed presentation immediately follows each missed refresh");
+            require(sequenceSlot(Sequence::BlackInsertion,anchor.refresh+1,false).eye==sequenceSlot(Sequence::BlackInsertion,actual+1,false).eye,"Composed BFI does not keep stale black/image parity");
+        }
+        anchor.observe(50,1019,true);anchor.observe(51,1020,true);require(anchor.refresh==1020,"Composed recovery resumes consecutive refreshes");
+        anchor.observe(52,1023,false);require(anchor.refresh==1023,"Transition to direct flip uses actual refresh immediately");
+        anchor.observe(52,1024,false);require(anchor.refresh==1023,"Duplicate present feedback is ignored");
         anchor.reset();anchor.observe(UINT32_MAX,2000,true);anchor.observe(0,2001,true);require(anchor.refresh==2001,"Anchor handles present counter rollover");
     }
     Settings identity;identity.emitterId="rp2040:serial1";identity.emitterFirmware="v1";
@@ -196,6 +207,45 @@ int main(){try{
         TimingTracker drift;for(unsigned i=1;i<=400;i++)drift.observe(i,i*p*1.0001);require(std::abs(drift.period-p*1.0001)<1e-9,"The fit follows the true period across the window");
         TimingTracker jump;for(unsigned i=1;i<=50;i++)jump.observe(i,i*p);jump.observe(51,51*p+.004);require(jump.samples<8,"A 4 ms discontinuity restarts the clock");
         TimingTracker gap;for(unsigned i=1;i<=40;i++)gap.observe(i,i*p);gap.observe(43,43*p);require(gap.samples==41&&std::abs(gap.predict(44)-44*p)<1e-7,"Skipped refreshes keep the same line");
+    }
+    {   // Desktop statistics can glitch while the physical scanout stays steady.
+        // A single bad report must not blank stereo or change queued IR deadlines.
+        const double p=1/239.982,origin=70000;
+        TimingTracker continuous;
+        unsigned rejected=0;
+        for(unsigned n=1;n<=240*180;++n){
+            const bool outlier=n>240&&n%211==0;
+            if(outlier)++rejected;
+            continuous.observeContinuous(n,origin+n*p+(outlier?.0008:0));
+            if(n>=8){
+                require(continuous.samples>=8,"Isolated desktop timestamp glitch lost the running clock");
+                require(std::abs(continuous.predict(n+6)-(origin+(n+6)*p))<1e-7,"Timestamp glitch shifted a queued eye deadline");
+            }
+        }
+        require(continuous.rejectedSamples==rejected&&continuous.corrections==0,"Isolated timestamp glitches must be counted without replacing the clock");
+        const auto last=continuous.lastRefresh;
+        const double predicted=continuous.predict(last+20);
+        for(unsigned n=1;n<=7;++n)continuous.observeContinuous(last+n,origin+(last+n)*p+.002);
+        require(continuous.samples>=8&&continuous.corrections==0&&std::abs(continuous.predict(last+20)-predicted)<1e-9,"An unconfirmed phase change must retain the old clock");
+        for(unsigned repeat=0;repeat<20;++repeat)continuous.observeContinuous(last+7,origin+(last+7)*p+.002);
+        require(continuous.corrections==0,"Duplicate statistics cannot confirm a clock change");
+        continuous.observeContinuous(last+8,origin+(last+8)*p+.002);
+        require(continuous.samples>=8&&continuous.corrections==1&&std::abs(continuous.predict(last+20)-(predicted+.002))<1e-7,"Confirmed phase change replaces the fit without acquisition blanking");
+        // A statistics-counter restart needs its own fit, without combining its
+        // new refresh indices with timestamps from the old counter domain.
+        const double restarted=predicted+.1;
+        for(unsigned n=1;n<=8;++n){continuous.observeContinuous(n,restarted+n*p);require(continuous.samples>=8,"Counter restart blanked an already-running output");}
+        require(continuous.corrections==2&&std::abs(continuous.predict(14)-(restarted+14*p))<1e-7,"A new counter domain gets a confirmed independent clock fit");
+        for(unsigned n=9;n<=16;++n){continuous.observeContinuous(n,restarted+8*p+(n-8)/120.);require(continuous.samples>=8,"Refresh-rate change must keep a running clock until its replacement is ready");}
+        require(continuous.corrections==3&&std::abs(continuous.period-1/120.)<1e-8,"A real refresh-rate change is not ignored indefinitely");
+        const auto continuousSamples=continuous.samples;
+        continuous.observeContinuous(17,std::numeric_limits<double>::quiet_NaN());
+        continuous.observeContinuous(17,std::numeric_limits<double>::infinity());
+        require(continuous.samples==continuousSamples,"Invalid timestamps cannot affect the running clock");
+        // A gap with no observations models statistics being temporarily unavailable.
+        continuous.observeContinuous(40,restarted+8*p+32/120.);
+        require(continuous.corrections==3&&continuous.samples==continuousSamples+1,"A statistics gap should resume the same clock without a reset");
+        continuous.reset();require(continuous.samples==0&&continuous.corrections==0&&continuous.rejectedSamples==0,"Explicit resync still resets all clock state");
     }
     {   // Brightness: a four-slot sequence gives the emitter a two-refresh period, and the shutter
         // may use all of it. Capping the shutter at one display refresh threw away half the light.

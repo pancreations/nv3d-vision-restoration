@@ -71,7 +71,7 @@ try {
         'VisionRestoration.exe', 'VisionDepth.exe', 'onnxruntime.dll', 'DirectML.dll',
         'runtime/x86/VisionStereo11.dll', 'runtime/x86/VisionStereoLoader.dll',
         'runtime/x64/VisionStereo11.dll', 'runtime/x64/VisionStereoLoader.dll',
-        'vision_firmware.exe', 'Prepare NVIDIA Firmware.cmd', 'Prepare NVIDIA Firmware.ps1',
+        'vision_firmware.exe', 'vision_rp2040_probe.exe', 'Release Notes.md', 'Prepare NVIDIA Firmware.cmd', 'Prepare NVIDIA Firmware.ps1',
         'tools/7zip/7za.exe', 'licenses/7zip/7z2603-src.7z',
         'firmware/VisionEmitter.uf2', 'Vision Restoration Quick Start.pdf', 'Vision Restoration README.pdf', 'README.md', 'Launch.cmd',
         'runtime/x64/VisionStereoCapture.addon64', 'runtime/x86/VisionStereoCapture.addon32',

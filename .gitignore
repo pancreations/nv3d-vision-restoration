@@ -1,6 +1,7 @@
 /build/
 /dist/
 /profiles/*.ini
+/profiles/*.preferences
 /reports/
 *.fw
 *.sys
@@ -17,3 +18,5 @@ __pycache__/
 /STUFF/
 /experiments/
 /$null
+# Local recordings are not release source.
+/*.mp4
