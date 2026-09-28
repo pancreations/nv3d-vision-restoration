@@ -95,7 +95,7 @@ struct DrawState {
         for(size_t i=0;i<8;i++)p[24+i]=s.cancelCrosstalk?std::clamp(s.leakProfile[i],0.f,.95f):0.f;
         p[3]=float(refreshIndex%256);p[22]=guardSlot?1.f:0.f;p[23]=s.guardLevel;
         p[32]=1;
-        if(pattern==3 && active){p[12]=float(int(active->packing));p[13]=float(int(active->encoding));p[14]=float(active->width);p[15]=float(active->height);p[32]=active->sdrWhiteLevel;if(active->alignmentApplied)p[10]=0;}
+        if(pattern==3 && active){p[12]=float(int(active->packing));p[13]=float(int(active->encoding));p[14]=float(active->width);p[15]=float(active->height);p[32]=active->sdrWhiteLevel;p[33]=active->eyeAspect;if(active->alignmentApplied)p[10]=0;}
         else if(pattern==3)p[4]=float(int(Eye::Black));
         D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(params.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped),"Map shader constants");memcpy(mapped.pData,p,sizeof(p));context->Unmap(params.Get(),0);
         auto* cb=params.Get();ID3D11ShaderResourceView* views[2]{};views[active&&active->packing==Packing::SeparateEyes?1:0]=view.Get();auto* sm=sampler.Get();context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,&cb);context->PSSetShaderResources(0,2,views);context->PSSetSamplers(0,1,&sm);context->Draw(3,0);views[0]=views[1]=nullptr;context->PSSetShaderResources(0,2,views);
@@ -608,6 +608,30 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
                 correct&=pixel[eye]>= (black?0:254)&&(!black||pixel[eye]==0)&&pixel[1-eye]==0&&pixel[2]==0;
             }
             context->Unmap(staging.Get(),0);if(!correct)throw std::runtime_error(hook?"Hook convergence/eye seam failed.":"Presenter convergence/eye seam failed.");
+        }
+        if(packing==Packing::SideBySide){
+            // At a 2:1 output, square eyes need side bars and 4:1 eyes need
+            // top/bottom bars. Check every pixel, both eyes, SDR/HDR and the
+            // separate inspection panes so an aspect fix cannot mix eyes.
+            for(float aspect:{1.f,2.f,4.f})for(bool preview:{false,true})for(bool hdr:{false,true})for(int eye:{0,1}){
+                draw.active->eyeAspect=aspect;Settings s;s.hdr=hdr;
+                draw.draw(context.Get(),160,80,s,Eye(eye),preview,3,0);
+                context->CopyResource(staging.Get(),output.Get());D3D11_MAPPED_SUBRESOURCE m{};
+                check(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&m),"Read SBS aspect pixels");bool correct=true;
+                for(int y=0;y<80;++y)for(int x=0;x<160;++x){
+                    if(preview&&y>=72)continue; // inspection label overlays the bottom rows
+                    const int paneWidth=preview?80:160,localX=x%paneWidth,selected=preview?x/80:eye;
+                    const float outputAspect=float(paneWidth)/80;
+                    const float width=aspect<outputAspect?80*aspect:float(paneWidth);
+                    const float height=aspect>outputAspect?paneWidth/aspect:80.f;
+                    const bool black=std::abs(localX+.5f-paneWidth*.5f)>width*.5f||std::abs(y+.5f-40)>height*.5f;
+                    const auto* pixel=static_cast<uint8_t*>(m.pData)+y*m.RowPitch+x*4;
+                    correct&=(black?pixel[selected]==0:pixel[selected]>=254)&&pixel[1-selected]==0&&pixel[2]==0;
+                }
+                context->Unmap(staging.Get(),0);if(!correct)throw std::runtime_error("Half/Full SBS aspect, bars or inspection eye split failed.");
+            }
+            draw.active->eyeAspect=0;
+            report<<"Half/Full SBS: eye aspect, pillarbox/letterbox, SDR/HDR and inspection panes PASS\n";
         }
         // Reuse the same DrawState/context exactly as the live stereo+stream
         // loop does. Every stream pixel must stay on the selected eye, even

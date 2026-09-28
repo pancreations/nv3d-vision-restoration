@@ -9,6 +9,7 @@
 using namespace vision;
 static void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 int main(){
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     try{
         {
@@ -94,7 +95,11 @@ int main(){
         };
         auto held=receive(0,128);const auto heldId=held->pairId;
         require(held->encoding==Encoding::SRGB&&held->packing==Packing::SideBySide,"Image stereo/color metadata lost");
+        require(held->eyeAspect==2.f,"Half SBS image did not restore squeezed eye width");
+        config.sbsFormat=SbsFormat::Full;
         auto newer=receive(1,256);
+        require(newer->eyeAspect==held->eyeAspect,"Full SBS image differs from equivalent Half SBS image");
+        auto square=receive(0,128);require(square->eyeAspect==1.f,"Full SBS image did not retain native eye proportions");
         require(held->pairId==heldId&&held->width==128&&newer!=held,"Source restart mutated a retained pair");
         source.stop();require(!source.latest(),"Stop retained published source");
         // The consumer's old pair and GPU handle must remain valid after a source
@@ -110,6 +115,33 @@ int main(){
         const auto* pixel=static_cast<uint8_t*>(map.pData);const bool intact=pixel[0]==0xc0&&pixel[1]==0x80&&pixel[2]==0x40;
         context->Unmap(staging.Get(),0);check(key->ReleaseSync(0),"Consumer release");
         require(intact,"Retained pair pixels changed after source restart");
+        {
+            const auto& area=displays.front().rect;
+            HWND window=CreateWindowExW(0,L"STATIC",L"SBS capture test",WS_POPUP,area.left+40,area.top+40,128,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+            require(window!=nullptr,"SBS capture window creation");
+            struct WindowCleanup {HWND handle;~WindowCleanup(){DestroyWindow(handle);}} cleanup{window};
+            ShowWindow(window,SW_SHOWNOACTIVATE);UpdateWindow(window);
+            Surface fixtureSurface;fixtureSurface.create(window,&displays.front().adapterLuid,false);
+            fixtureSurface.bind();float color[]{1,0,0,1};
+            fixtureSurface.context->ClearRenderTargetView(fixtureSurface.target.Get(),color);
+            check(fixtureSurface.swap->Present(1,0),"Present SBS capture fixture");
+            // Let the compositor publish the visible surface before WGC opens it.
+            const double visibleAt=qpc()+.2;
+            while(qpc()<visibleAt){MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(10);}
+            SourceConfig capture;capture.kind=SourceKind::Window;capture.window=window;
+            for(auto format:{SbsFormat::Half,SbsFormat::Full}){
+                capture.sbsFormat=format;source.start(capture,displays.front().adapterLuid);
+                const double deadline=qpc()+5;
+                while(!source.latest()&&source.status().running&&qpc()<deadline){
+                    MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(10);
+                }
+                auto captured=source.latest();const auto captureStatus=source.status();source.stop();
+                if(!captured)throw std::runtime_error("SBS capture failed: "+captureStatus.message);
+                std::cout<<"SBS captured client: "<<captured->width<<'x'<<captured->height<<'\n';
+                require(captured&&captured->width==128&&captured->height==64,"SBS window capture lost client dimensions");
+                require(captured->packing==Packing::SideBySide&&captured->eyeAspect==(format==SbsFormat::Half?2.f:1.f),"Window capture lost Half/Full SBS aspect");
+            }
+        }
         Emitter simulated;Settings settings;simulated.configure(settings);simulated.connect({}, {},true);auto until=qpc()+2;while(simulated.status().state!=EmitterState::Simulated && qpc()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));require(simulated.status().state==EmitterState::Simulated,"Simulator startup");simulated.submit(Eye::Left,qpc()+.03);settings.phaseUs=500;simulated.configure(settings);until=qpc()+2;while(simulated.status().commands==0&&qpc()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));require(simulated.status().commands>0,"Live timing edit preserves queued eye trigger");simulated.suspend();double stopped=qpc();simulated.disconnect();require(qpc()-stopped<1,"Simulator shutdown was not bounded");
         Emitter queued;queued.configure(Settings{});queued.connect({}, {},true);until=qpc()+2;
         while(queued.status().state!=EmitterState::Simulated&&qpc()<until)Sleep(2);
@@ -139,7 +171,7 @@ int main(){
         stale.submit(Eye::Right,qpc()-.002);until=qpc()+2;
         while(stale.status().late==0&&qpc()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));
         require(stale.status().late==1&&stale.status().commands==0,"Stale eye command must be dropped before reaching the emitter");stale.disconnect();
-        std::cout<<"PASS: image-source GPU sharing, pair retention across restart/stop, HDR output format changes, simulated emitter trigger, stale trigger rejection and shutdown\n";
+        std::cout<<"PASS: Half/Full SBS images and window capture, image-source GPU sharing, pair retention across restart/stop, HDR output format changes, simulated emitter trigger, stale trigger rejection and shutdown\n";
         CoUninitialize();return 0;
     }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';CoUninitialize();return 1;}
 }

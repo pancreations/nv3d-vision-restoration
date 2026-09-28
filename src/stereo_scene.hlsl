@@ -60,6 +60,13 @@ float3 origins[3]={float3(-1.467,1.4167,3),float3(-.6,1.889,4),float3(1.769,3.06
 for(int w=0;w<3;w++){float t=labelHit(ro,rd,origins[w],cells[w],w,counts[w]);if(t>0&&t<best){best=t;col=inks[w];}}
 return col;}
 float3 eyeColor(float2 uv,int eye,int pattern,float aspect,out bool black){black=false;float3 c=0;
+// Fit the restored SBS eye within the output (or each inspection pane).
+// Half SBS restores twice the stored eye width; Full SBS uses square pixels.
+if(pattern==3&&capture.y>0){
+    float2 scale=float2(max(aspect/capture.y,1),max(capture.y/aspect,1));
+    uv=(uv-.5)*scale+.5;
+    if(any(uv<0)||any(uv>1)){black=true;return 0;}
+}
 // Move each eye in opposite directions without changing camera separation.
 // Diagnostic targets stay fixed so convergence cannot hide optical leakage.
 float2 stereoUV=uv;stereoUV.x+=(eye==0?1:-1)*options.z;

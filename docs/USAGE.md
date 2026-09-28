@@ -53,6 +53,11 @@ in every view, preventing the converted image from capturing itself.
 
 - **Start 3D preview** presents alternating eye frames beside the controls and
   drives the emitter. The preview stays visible as you change tabs and settings.
+- **Windowed preview** presents the same 3D output in a separate normal window.
+  Drag its title bar to move it, resize its borders, or minimize/maximize it.
+  The controls remain available in the main app. **F11** enters fullscreen and
+  returns to the previous window size and position; **Esc** or the close button
+  stops the preview. Keep it on the selected output display for calibrated timing.
 - **Fullscreen 3D** opens the same stereo output fullscreen. **Stop** or **Esc**
   returns to the controls.
 - **Inspect eye images** displays the actual two eye images side by side in 2D.
@@ -118,10 +123,16 @@ They do not establish that all visible leakage through a glasses lens is gone.
 See the [emitter timing fixes](EMITTER-TIMING-FIX.md) and
 [presentation synchronization](PRESENTATION-SYNC.md) for implementation details.
 
+## Half and Full SBS inputs
+
+**Stereo image**, **Capture window**, and **VLC stereo movie** all offer **Half SBS** and **Full SBS** in **Packing**. Half SBS restores horizontally squeezed eyes: a combined 1920 × 1080 frame displays each eye at 16:9. Full SBS uses each eye's native proportions: a combined 3840 × 1080 frame also displays each eye at 16:9. Select the format that produced the content; resolution alone cannot identify it.
+
+SBS output preserves those proportions in previews, fullscreen, eye inspection and the 2D stream view, adding black bars when the output shape differs. Window capture uses the client picture without the title bar or borders. After changing packing, click **Start source** again. **Top / bottom** remains available with its existing output-area scaling.
+
 ## VLC stereo movies
 
 1. Install [64-bit VLC 3.x](https://www.videolan.org/vlc/). The application loads its optional library; it does not modify VLC settings or require the legacy NVIDIA stereo driver.
-2. Under **Input**, select **VLC stereo movie** and choose **Side by side** or **Top / bottom** to match the file. **Choose movie...** opens a local video file. Both half and full packed layouts use the same eye split; the image expands to the output area. The current presenter stretches to that area, so use a matching display aspect ratio or a movie with encoded letterboxing.
+2. Under **Input**, select **VLC stereo movie** and choose **Half SBS**, **Full SBS** or **Top / bottom** to match the file. **Choose movie...** opens a local video file. Half and Full SBS use the same eye split with different width restoration, preserving the intended eye aspect ratio.
 3. Click **Start source**, then start your calibrated **3D preview** or fullscreen output. Use **Swap eyes** for right-first movies. Packing changes stop the source; start it again with the new setting.
 4. **Pause movie / Resume movie** controls both VLC video and audio while the output retains a complete stereo pair. **Movie position** seeks when supported; **Movie volume** adjusts sound. **Stop movie** stops decoding. At end-of-file the last complete pair remains visible; **Start source** starts the movie again.
 
@@ -173,6 +184,8 @@ Window-captured games now use the click-through, nonactivating game overlay in
 fullscreen, including after F11 returns from the embedded preview. Earlier
 builds only used that path for direct-eye providers, so captured games could
 fight an activating fullscreen window and bypass overlay compatibility.
+The captured window can be on another monitor; fullscreen covers the selected
+output display regardless of the captured window's position or size.
 The session log records `passthrough` and `gameOverlay` to identify that path.
 Switching focus to Discord, another monitor or another application leaves both
 output windows visible. Minimizing the game holds the last captured pair and

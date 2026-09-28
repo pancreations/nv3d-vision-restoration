@@ -15,6 +15,7 @@ struct StereoFrame {
     uint64_t pairId=0;double timestamp=0;
     Packing packing=Packing::SideBySide;Encoding encoding=Encoding::SRGB;
     bool alignmentApplied=false;float sdrWhiteLevel=1;
+    float eyeAspect=0; // display width / height of one eye; zero keeps output-area scaling
 };
 struct SourceStatus { std::string message="Built-in calibration patterns";uint64_t frames=0,dropped=0;double lastFrame=0;bool running=false;
     // Whole-screen conversion: network input size, last inference time, age of the depth in use, time
@@ -22,7 +23,9 @@ struct SourceStatus { std::string message="Built-in calibration patterns";uint64
     unsigned netWidth=0,netHeight=0;double depthMs=0,depthAgeMs=0,convertMs=0,depthFps=0;uint64_t depthFrames=0;std::string depthMessage;
     int64_t mediaTimeMs=0,mediaLengthMs=0;bool mediaPaused=false,mediaSeekable=false; };
 enum class SourceKind { Patterns, Image, Window, Screen, Vlc, DirectEyes };
+enum class SbsFormat { Half, Full };
 struct SourceConfig { SourceKind kind=SourceKind::Patterns;std::filesystem::path file;HWND window=nullptr;Packing packing=Packing::SideBySide;Encoding encoding=Encoding::SRGB;bool captureHDR=true;float sdrWhiteLevel=1;
+    SbsFormat sbsFormat=SbsFormat::Half;
     // Screen: the display to convert, the conversion settings, the depth helper and its model.
     HMONITOR monitor=nullptr;ScreenSettings screen;std::filesystem::path depthHelper,depthModel,depthLog;
     std::filesystem::path vlcDirectory;bool mediaMute=false;

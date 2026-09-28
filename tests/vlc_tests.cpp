@@ -72,6 +72,7 @@ int wmain(int argc,wchar_t** argv){
             throw std::runtime_error(error);
         }
         auto retained=source.latest();pixels(retained,displays.front().adapterLuid,Packing::SideBySide);
+        require(retained->eyeAspect==2.f,"Half SBS movie did not restore eye width");
         until([&]{return source.status().mediaTimeMs>300&&source.status().mediaSeekable;},"VLC time/seekability missing");
         source.pauseMedia(true);until([&]{return source.status().mediaPaused;},"VLC did not pause");
         const auto time=source.status().mediaTimeMs;std::this_thread::sleep_for(std::chrono::milliseconds(400));
@@ -81,6 +82,14 @@ int wmain(int argc,wchar_t** argv){
         source.seekMedia(4600);until([&]{return !source.status().running;},"VLC end-of-file not reported");
         require(source.status().message.find("ended")!=std::string::npos&&source.latest(),"End-of-file did not retain last pair");
         source.stop();pixels(retained,displays.front().adapterLuid,Packing::SideBySide);retained.reset();
+        for(unsigned width:{128u,256u}){
+            movie(file,Packing::SideBySide,width);config.sbsFormat=SbsFormat::Full;
+            source.start(config,displays.front().adapterLuid);
+            until([&]{return bool(source.latest())||!source.status().running;},"Full SBS startup timeout");
+            auto full=source.latest();pixels(full,displays.front().adapterLuid,Packing::SideBySide);
+            require(full->eyeAspect==(width==128?1.f:2.f),"Full SBS movie lost native eye proportions");source.stop();
+        }
+        config.sbsFormat=SbsFormat::Half;
         movie(file,Packing::TopBottom);config.packing=Packing::TopBottom;source.start(config,displays.front().adapterLuid);
         until([&]{return bool(source.latest())||!source.status().running;},"Top/bottom startup timeout");pixels(source.latest(),displays.front().adapterLuid,Packing::TopBottom);
         const double stopping=qpc();source.stop();require(qpc()-stopping<3,"VLC shutdown stalled");
@@ -96,7 +105,7 @@ int wmain(int argc,wchar_t** argv){
             pixels(source.latest(),displays.front().adapterLuid,config.packing);
             source.stop();std::cout<<"PASS: independently encoded compressed movie "<<i<<'\n';
         }
-        std::cout<<"PASS: real VLC decoding, SBS/TAB GPU eye pixels, Unicode path, pause/resume, seeking, end-of-file pair retention, restart/stop, missing/odd movies; no emitter writes\n";
+        std::cout<<"PASS: real VLC decoding, Half/Full SBS aspect and SBS/TAB GPU eye pixels, Unicode path, pause/resume, seeking, end-of-file pair retention, restart/stop, missing/odd movies; no emitter writes\n";
         return 0;
     }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
 }

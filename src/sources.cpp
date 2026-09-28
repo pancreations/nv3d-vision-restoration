@@ -85,6 +85,9 @@ void StereoSource::run(std::stop_token stop,SourceConfig config,LUID adapterId){
             check(completed,"Source GPU copy did not complete; holding last complete pair");
             frame->width=width;frame->height=height;frame->packing=config.kind==SourceKind::Screen?Packing::SideBySide:config.packing;frame->encoding=encoding;frame->timestamp=timestamp;
             frame->alignmentApplied=config.kind==SourceKind::Screen;frame->sdrWhiteLevel=config.sdrWhiteLevel;
+            frame->eyeAspect=config.packing==Packing::SideBySide&&
+                (config.kind==SourceKind::Image||config.kind==SourceKind::Window||config.kind==SourceKind::Vlc)
+                ?float(width)/float(height)/(config.sbsFormat==SbsFormat::Full?2.f:1.f):0.f;
             std::lock_guard l(mutex_);frame->pairId=++status_.frames;latest_=frame;if(separate)directQueue_.push_back(frame);status_.lastFrame=qpc();if(config.kind!=SourceKind::Screen)status_.message="Receiving complete stereo pairs"; // the screen conversion reports its own state
         };
         if(config.kind==SourceKind::DirectEyes){
