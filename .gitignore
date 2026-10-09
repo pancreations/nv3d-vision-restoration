@@ -1,4 +1,5 @@
 /build/
+/build-vrto3d/
 /dist/
 /profiles/*.ini
 /profiles/*.preferences

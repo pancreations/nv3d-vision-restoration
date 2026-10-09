@@ -13,6 +13,7 @@
   h1 { font-size:28pt; line-height:1.05; margin:0 0 5pt; letter-spacing:-.5pt; }
   h2 { font-size:17pt; margin:14pt 0 7pt; padding-bottom:3pt; border-bottom:1.5pt solid var(--line); }
   h3 { font-size:12.5pt; margin:12pt 0 4pt; }
+  h1, h2, h3 { break-after:avoid; }
   p { margin:4pt 0 7pt; }
   ul, ol { margin:5pt 0 9pt 20pt; padding:0; }
   li { margin:2.5pt 0; }
@@ -39,7 +40,7 @@
   <div class="mast">
     <div class="badge">PORTABLE WINDOWS RELEASE</div>
     <h1>Vision Restoration</h1>
-    <div class="sub">Quick Start · Version 0.3.0</div>
+    <div class="sub">Quick Start · Alpha 0.3.5</div>
   </div>
 
   <div class="box warn">
@@ -138,6 +139,28 @@
   <p><strong>Start screen 3D</strong> and <strong>Fullscreen / F11</strong> keep desktop mouse and keyboard input available through the overlay. AI depth is unrelated to normal stereo images, window capture, game integration, or emitter control.</p>
 
   <div class="page"></div>
+  <div class="mast"><h1>VR input sources</h1><div class="sub">Experimental inputs for a running SteamVR session</div></div>
+
+  <h2>VRto3D SBS / TAB</h2>
+  <ol class="steps">
+    <li>Leave SteamVR, VRto3D and the VR game running. Set VRto3D to side-by-side or top/bottom output and keep its window visible and unminimized.</li>
+    <li>In VRto3D's <strong>Ctrl+Home &gt; System</strong> menu, turn <strong>Auto Focus OFF</strong> and choose <strong>Save Default Cfg</strong>.</li>
+    <li>Run <code>Launch-VRto3D.cmd</code>, or select <strong>Input/Games &gt; Source &gt; VRto3D (SBS / TAB)</strong>. Choose its window and match <strong>Half/Full SBS</strong> or <strong>Half/Full TAB</strong> to the content.</li>
+    <li>Optionally select the separate <strong>Game input</strong> window. Click <strong>Start source</strong>, inspect the eyes, then start calibrated preview or fullscreen output.</li>
+  </ol>
+  <p>This route uses Windows Graphics Capture. The app does not launch the VR game or change VRto3D's settings. See <code>docs/VRTO3D.md</code> for packing examples and troubleshooting.</p>
+
+  <h2>Wibble Wobble / SteamVR eyes</h2>
+  <ol class="steps">
+    <li>Leave SteamVR, Wibble Wobble/VRto3D and the VR application running.</li>
+    <li>Run <code>Launch-WibbleWobble.cmd</code>, or select <strong>Input/Games &gt; Source &gt; Wibble Wobble</strong>. This receives compositor eye textures directly.</li>
+    <li>After the first image, the embedded 3D preview starts if the emitter and timing are ready. Otherwise connect the emitter, match the display rate and click <strong>Start 3D preview</strong>.</li>
+    <li>Use <strong>Windowed preview</strong> or <strong>Fullscreen 3D</strong> for another output mode. <strong>Inspect eye images</strong> explicitly opens an emitter-free 2D view.</li>
+  </ol>
+  <p>Wibble's own display window temporarily moves off-screen during stereo and returns on Stop. If SteamVR runs as administrator, use <strong>Connect to administrator SteamVR</strong> and approve Windows UAC to reopen the app with matching permissions. See <code>docs/WIBBLE-WOBBLE.md</code> for details.</p>
+  <div class="box warn"><strong>VR validation is incomplete.</strong> Wibble's two eye textures have no shared frame ID, so their temporal alignment is not guaranteed. Successful capture does not establish sustained VR gameplay, optical synchronization or clean lens separation. SteamVR and Wibble Wobble/VRto3D are installed separately.</div>
+
+  <div class="page"></div>
   <div class="mast"><h1>Troubleshooting</h1><div class="sub">Useful checks before filing a report</div></div>
 
   <h2>The app does not start</h2>
@@ -167,12 +190,13 @@
   </ul>
 
   <h2>Recording and screen sharing</h2>
-  <p>Use the <strong>2D stream view</strong> to capture a steady single eye rather than alternating eyes and black frames. The stream is SDR. AI desktop already hides its stereo overlay from capture, so screen sharing shows the ordinary desktop.</p>
+  <p>Use the <strong>2D stream view</strong> to capture a steady single eye rather than alternating eyes and black frames. The stream is SDR and requires Windows Graphics Capture when the source is a captured window. AI desktop requests capture exclusion for its stereo overlay; verify the recorder's image before relying on it.</p>
 
   <h2>Diagnostics</h2>
   <p>The portable folder keeps application diagnostics under <code>reports</code>. A connected game writes <code>VisionStereo11.log</code> in its own executable directory. Reports can contain hardware, display, timing, and local path information; review them before posting publicly.</p>
 
-  <h2>Project resources</h2>
+  <div class="page"></div>
+  <div class="mast"><h1>Project resources</h1><div class="sub">Downloads, guides and support</div></div>
   <ul>
     <li><a href="https://github.com/pancreations/nv3d-vision-restoration">Vision Restoration source and issue tracker</a></li>
     <li><a href="https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe">Direct download: NVIDIA standalone 3D Vision USB controller package 390.41</a></li>

@@ -34,6 +34,45 @@ void timeline(const LcdExposure& e,double guard) {
     ImGui::TextDisabled("L %.2f - %.2f ms   R %.2f - %.2f ms",e.openUs[0]/1000,e.closeUs[0]/1000,e.openUs[1]/1000,e.closeUs[1]/1000);
 }
 }
+bool drawDepthMapControls(ScreenSettings& s) {
+    bool changed=false;ImGui::PushID("depth_map_controls");
+    if(ImGui::CollapsingHeader("Depth map controls",ImGuiTreeNodeFlags_DefaultOpen)){
+        changed|=ImGui::Checkbox("Enable map adjustments",&s.mapEnabled);
+        ImGui::TextWrapped("Off uses the original depth processing. Enable to apply the sliders and presets.");
+        ImGui::BeginDisabled(!s.mapEnabled);
+        auto slider=[&](const char* id,float& value,float low,float high,const char* format,const char* help){
+            ImGui::SetNextItemWidth(-1);
+            const bool edited=ImGui::SliderFloat(id,&value,low,high,format,ImGuiSliderFlags_AlwaysClamp);
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",help);
+            changed|=edited;
+        };
+        slider("##far",s.map.farPoint,0,s.map.nearPoint-.01f,"Far point %.2f","Depth at or below this becomes black (farthest). These are relative levels, not meters. Ctrl+click to type.");
+        slider("##near",s.map.nearPoint,s.map.farPoint+.01f,1,"Near point %.2f","Depth at or above this becomes white (nearest). Bring the points closer to expand a narrow depth range.");
+        slider("##contrast",s.map.contrast,.25f,4,"Map contrast %.2fx","Increases depth differences around mid gray. High contrast can flatten the nearest and farthest areas.");
+        slider("##gamma",s.map.gamma,.25f,4,"Midtone gamma %.2f","Above 1 moves middle depths nearer; below 1 moves them farther. Black and white stay fixed.");
+        slider("##detail",s.map.detail,0,2,"Local detail %.2fx","Enhances small depth variations already in the map. High values can emphasize noise and edge halos.");
+        int radius=int(s.map.detailRadius);ImGui::SetNextItemWidth(-1);
+        if(ImGui::SliderInt("##radius",&radius,1,8,"Detail radius %d map pixels",ImGuiSliderFlags_AlwaysClamp)){s.map.detailRadius=unsigned(radius);changed=true;}
+        if(ImGui::IsItemHovered())ImGui::SetTooltip("Small radius targets fine features; larger radius enhances broader depth variations.");
+        const float presetWidth=(ImGui::GetContentRegionAvail().x-2*ImGui::GetStyle().ItemSpacing.x)/3;
+        auto preset=[&](const char* name,const DepthMapSettings& values,const char* help){
+            const bool selected=s.map==values;
+            if(selected)ImGui::PushStyleColor(ImGuiCol_Button,ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if(ImGui::Button(name,{presetWidth,0})){s.map=values;changed=true;}
+            if(selected)ImGui::PopStyleColor();
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",help);
+        };
+        preset("Original",DepthMapSettings{},"Original map: full near/far range, neutral contrast and gamma, no detail enhancement. Resets map adjustments.");
+        ImGui::SameLine();preset("Medium detail",{.02f,.98f,1.1f,1.f,.35f,2,false},"Gently expands the depth range and enhances fine variations. Applies live; you can still adjust every slider.");
+        ImGui::SameLine();preset("High detail",{.04f,.96f,1.2f,1.f,.8f,3,false},"Stronger depth range and local detail enhancement. May emphasize noise or halos. Applies live; you can still adjust every slider.");
+        changed|=ImGui::Checkbox("Invert depth",&s.map.invert);
+        ImGui::EndDisabled();
+        changed|=ImGui::Checkbox("Show depth map",&s.showDepth);
+        ImGui::TextWrapped(s.mapEnabled?"Black = far, white = near. Edits apply live to the map and the 3D output.":"Original map: mid gray marks the screen plane. Map adjustments are off.");
+        ImGui::TextWrapped("For more estimated detail, increase Network input under Input/Games. Larger inputs take more GPU time; local detail enhances the existing estimate.");
+    }
+    ImGui::PopID();return changed;
+}
 bool drawImageControls(Settings& s,bool hdrAvailable,bool aiDesktop) {
     ImGui::PushID("image_controls");
     ImGui::TextUnformatted("BRIGHTNESS / HDR");ImGui::SameLine();
@@ -57,6 +96,7 @@ bool drawImageControls(Settings& s,bool hdrAvailable,bool aiDesktop) {
         float depth=s.screen.separation*100;
         if(ImGui::SliderFloat("##depth",&depth,0,10,"AI depth strength %.2f %%",ImGuiSliderFlags_AlwaysClamp)){s.screen.separation=depth/100;changed=true;}
         ImGui::SetNextItemWidth(-1);changed|=ImGui::SliderFloat("##convergence",&s.screen.convergence,.01f,1,"Screen plane %.2f",ImGuiSliderFlags_AlwaysClamp);
+        changed|=drawDepthMapControls(s.screen);
     }else{
         changed|=ImGui::SliderFloat("##depth",&s.depth,0,.12f,"Shape depth %.3f",ImGuiSliderFlags_AlwaysClamp);
         float convergence=s.convergence*100;ImGui::SetNextItemWidth(-1);

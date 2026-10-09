@@ -11,6 +11,17 @@ static int checks=0;
 static void require(bool b,const char* msg){++checks;if(!b)throw std::runtime_error(msg);}
 template<class F>void rejects(F f){bool threw=false;try{f();}catch(const std::exception&){threw=true;}require(threw,"Expected validation failure");}
 int main(){try{
+    for(double hz:{60.,119.88,120.,240.}){
+        const double period=1/hz;
+        require(!emitterCadenceDiscontinuous(Eye::Black,0,Eye::Left,10,period),"First eye does not reacquire a previous cadence");
+        require(!emitterCadenceDiscontinuous(Eye::Left,10,Eye::Right,10+period+.00002,period),"Ordinary timestamp jitter does not reset the emitter lock");
+        require(emitterCadenceDiscontinuous(Eye::Left,10,Eye::Left,10+period,period),"Repeated eye forces immediate firmware eye acquisition");
+        require(emitterCadenceDiscontinuous(Eye::Left,10,Eye::Right,10+3*period,period),"A gap reacquires even when eye parity is unchanged");
+        TimingTracker clock;for(unsigned n=1;n<=20;++n)clock.observe(n,10+n*period);
+        require(clock.futureRefresh(22,clock.predict(21))==22,"Queued future display prediction remains unchanged");
+        require(clock.futureRefresh(21,clock.predict(24)+period*.2)==25,"CPU stall skips past refreshes before choosing the eye and black slot");
+        require(clock.predict(clock.futureRefresh(21,clock.predict(24)+period*.2))>clock.predict(24)+period*.2,"Recovered shutter target remains in the future");
+    }
     require(rp2040TimingSupported(120,Sequence::Repeated,true),"RP2040 LCD 120 Hz preload supported");
     require(rp2040TimingSupported(119.88,makeSequence(4,0),true),"Fractional TV with four held refreshes supported");
     require(rp2040TimingSupported(60,Sequence::Repeated,true),"60 Hz LCD can test 15 images per eye/s");
@@ -56,9 +67,12 @@ int main(){try{
     {Settings s;s.leftUs=250;s.rightUs=3000;applyTimingPreset(s,240);require(s.leftUs==250&&s.rightUs==1500,"IR preset respects minimum shutter duration");rejects([&]{applyTimingPreset(s,90);});require(s.refresh==240,"Unsupported preset leaves settings intact");applyTimingPreset(s,100);require(s.refresh==100&&std::abs(s.leftUs-600)<1e-9&&std::abs(s.rightUs-std::min(3600.0,calibrationMaxShutterUs(100)))<1e-9,"100 Hz preset scales shutter by the frame period");}
     // Recorded display-refresh anchors: queue depth and composition must not
     // invent an extra refresh between an image and its shutter command.
-    require(presentationQueueDepth(119.98)==3&&presentationQueueDepth(120)==3,"120 Hz keeps its existing presentation reserve");
-    require(presentationQueueDepth(239.98)==6&&presentationQueueDepth(240)==6,"240 Hz must retain the same time reserve as 120 Hz");
-    require(presentationQueueDepth(144)==4&&presentationQueueDepth(360)==maxPresentationQueueDepth,"Refresh-based queue is bounded");
+    const struct {double hz;unsigned depth;} presentationCases[]={{60,3},{119.98,3},{120,3},{144,4},{165,5},{239.98,6},{240,6},{360,8}};
+    for(auto [hz,depth]:presentationCases){
+        require(presentationQueueDepth(hz)==depth,"Official emitter preserves refresh-scaled display buffering");
+        require(presentationQueueDepth(hz,true)==depth,"Device-scheduled emitter still needs display buffering against GPU stalls");
+        if(hz<=320)require(presentationQueueDepth(hz)/hz>=.025-1e-12,"Display queue retains at least 25 ms before the capacity limit");
+    }
     rejects([]{presentationQueueDepth(0);});rejects([]{presentationQueueDepth(std::nan(""));});
     require(emitterCommandQueueCapacity>maxPresentationQueueDepth,"Every queued eye frame needs space for its shutter command");
     for(uint64_t displayedRefresh:{1000ull,1001ull,2005ull})for(uint32_t queued=1;queued<=maxPresentationQueueDepth;queued++){
@@ -300,6 +314,31 @@ int main(){try{
             Settings saved;saved.panelRiseUs=1500;saved.cancelCrosstalk=true;saved.cancelStrength=1.25f;saved.leakProfile.fill(.3f);validate(saved);auto lbFile=std::filesystem::temp_directory_path()/"vision-lightboost-test.ini";saveProfile(lbFile,saved);auto loaded=loadProfile(lbFile);
             require(loaded.panelRiseUs==1500&&loaded.cancelCrosstalk&&std::abs(loaded.cancelStrength-1.25f)<1e-6,"LightBoost settings survive a profile reload");require(loaded.leakProfile[0]==0,"The derived leak profile is not stored");std::filesystem::remove(lbFile);
             {Settings c;c.cancelStrength=3;rejects([&]{validate(c);});}{Settings c;c.panelRiseUs=-1;rejects([&]{validate(c);});}{Settings c;c.leakProfile[2]=1.5f;rejects([&]{validate(c);});}
+        }
+        {
+            require(Settings{}.captureMethod==CaptureMethod::DesktopDuplication,"New profiles keep DXGI for AI desktop capture");
+            require(Settings{}.windowCaptureMethod==CaptureMethod::WindowsGraphicsCapture,"New profiles isolate captured windows from overlapping output");
+            auto captureFile=std::filesystem::temp_directory_path()/"vision-capture-setting.ini";
+            for(auto desktop:{CaptureMethod::DesktopDuplication,CaptureMethod::WindowsGraphicsCapture})
+                for(auto window:{CaptureMethod::DesktopDuplication,CaptureMethod::WindowsGraphicsCapture}){
+                Settings c;c.captureMethod=desktop;c.windowCaptureMethod=window;saveProfile(captureFile,c);const auto loaded=loadProfile(captureFile);
+                require(loaded.captureMethod==desktop&&loaded.windowCaptureMethod==window,"Desktop and window capture preferences survive reload independently");
+            }
+            // Older profiles had one shared capture preference. Keep it for
+            // desktop conversion without bringing desktop occlusion into games.
+            for(int legacyMethod:{-1,0,1}){
+                {std::ofstream f(captureFile);f<<"version 11\nwidth 1920\nheight 1080\nrefresh 120\n";if(legacyMethod>=0)f<<"capture_method "<<legacyMethod<<'\n';}
+                const auto legacy=loadProfile(captureFile);
+                require(legacy.captureMethod==CaptureMethod(legacyMethod<0?0:legacyMethod)&&legacy.windowCaptureMethod==CaptureMethod::WindowsGraphicsCapture,"Old profiles preserve desktop preference and default window capture to isolation");
+                saveProfile(captureFile,legacy);const auto migrated=loadProfile(captureFile);
+                require(migrated.captureMethod==legacy.captureMethod&&migrated.windowCaptureMethod==CaptureMethod::WindowsGraphicsCapture,"Migrated profile keeps independent capture defaults after save");
+            }
+            for(int invalid:{-1,2}){
+                Settings c;c.windowCaptureMethod=CaptureMethod(invalid);rejects([&]{validate(c);});
+                {std::ofstream f(captureFile);f<<"version 11\nwidth 1920\nheight 1080\nrefresh 120\nwindow_capture_method "<<invalid<<'\n';}
+                rejects([&]{loadProfile(captureFile);});
+            }
+            std::filesystem::remove(captureFile);
         }
         {   // Hold/black sequences at any rate: encoding, slots, emitter period, model and the comparison table.
             require(makeSequence(1,0)==Sequence::Alternating&&makeSequence(1,1)==Sequence::BlackInsertion&&makeSequence(2,0)==Sequence::Repeated,"Classic patterns keep their codes");

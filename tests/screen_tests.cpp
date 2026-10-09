@@ -36,6 +36,18 @@ int main(){try{
     // The depth view: the bar is brighter than the background in both eyes.
     ScreenSettings view=s;view.showDepth=true;auto shown=render(view,true);
     for(unsigned half=0;half<2;half++)require((shown[size_t(24)*W*2+half*W+48]&0xff)>(shown[size_t(24)*W*2+half*W+10]&0xff)+64,"The depth view must show the near bar brighter");
+    view.convergence=.9f;require(render(view,true)!=shown,"Original preview marks depth relative to the screen plane");
+    view.mapEnabled=true;auto adjustedPreview=render(view,true);
+    view.convergence=.5f;require(render(view,true)==adjustedPreview,"Opt-in adjusted preview is independent of the screen plane");
+    // The processor's output is what both the depth preview and stereo renderer consume.
+    {DepthMapProcessor processor;DepthMapSettings adjustments;adjustments.invert=true;std::vector<float> edited;
+     processor.process(nearness,DW,DH,adjustments,edited);
+     D3D11_SUBRESOURCE_DATA editedData{edited.data(),DW*4,0};ComPtr<ID3D11Texture2D> editedMap;
+     check(device->CreateTexture2D(&n,&editedData,&editedMap),"Adjusted map");nearView.Reset();
+     check(device->CreateShaderResourceView(editedMap.Get(),nullptr,&nearView),"Adjusted map view");
+     const auto preview=render(view,true),adjustedStereo=render(s,true);
+     require((preview[size_t(24)*W*2+48]&0xff)==0&&(preview[size_t(24)*W*2+10]&0xff)==255,"Preview displays adjusted black and white endpoints");
+     require(centroid(adjustedStereo,1)-centroid(adjustedStereo,0)>3,"Map edits alter the actual stereo disparity");}
     // A far bar (nearness 0 where the background is 1) lands uncrossed.
     for(auto& v:nearness)v=1-v;
     ComPtr<ID3D11Texture2D> farMap;check(device->CreateTexture2D(&n,&nd,&farMap),"Far nearness");ComPtr<ID3D11ShaderResourceView> farView;check(device->CreateShaderResourceView(farMap.Get(),nullptr,&farView),"Far view");
@@ -51,6 +63,37 @@ int main(){try{
         renderer.downscale(context.Get(),hdrView.Get(),view.Get(),1,1,0,true,white);context->CopyResource(read.Get(),converted.Get());D3D11_MAPPED_SUBRESOURCE m{};check(context->Map(read.Get(),0,D3D11_MAP_READ,0,&m),"Read network colors");
         bool correct=true;for(int channel=0;channel<3;++channel){const float linear=color[channel]/white;const float expected=linear<=.0031308f?linear*12.92f:1.055f*std::pow(linear,1/2.4f)-.055f;correct&=std::abs(static_cast<uint8_t*>(m.pData)[channel]/255.f-expected)<.006f;}
         context->Unmap(read.Get(),0);require(correct,"HDR capture changed the depth network's input colors");
+    }
+    // Run temporally normalized maps through the actual preview and stereo shader. An
+    // unchanged picture with changing model scale must not flash or shift in either eye.
+    {
+        auto savedNearView=nearView;
+        D3D11_TEXTURE2D_DESC dynamic=n;dynamic.Usage=D3D11_USAGE_DYNAMIC;dynamic.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+        ComPtr<ID3D11Texture2D> stableMap;check(device->CreateTexture2D(&dynamic,nullptr,&stableMap),"Stable depth map");
+        nearView.Reset();check(device->CreateShaderResourceView(stableMap.Get(),nullptr,&nearView),"Stable depth view");
+        std::vector<float> raw(DW*DH),out;
+        for(unsigned y=0;y<DH;++y)for(unsigned x=0;x<DW;++x)raw[y*DW+x]=10.f+float(x)/float(DW-1);
+        auto upload=[&]{
+            D3D11_MAPPED_SUBRESOURCE m{};check(context->Map(stableMap.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&m),"Upload stable depth");
+            for(unsigned y=0;y<DH;++y)memcpy(static_cast<uint8_t*>(m.pData)+y*m.RowPitch,out.data()+y*DW,DW*sizeof(float));
+            context->Unmap(stableMap.Get(),0);
+        };
+        DepthNormalizer normalizer;normalizer.process(raw.data(),DW,DH,out);upload();
+        ScreenSettings preview=s;preview.showDepth=true;
+        const auto initialPreview=render(preview,true),initialStereo=render(s,true);
+        for(unsigned frame=0;frame<12;++frame){
+            auto drifted=raw;for(float& v:drifted)v=v*(frame%2?1.01f:.99f)+(frame%3?.02f:-.02f);
+            normalizer.process(drifted.data(),DW,DH,out);upload();
+            const auto depthImage=render(preview,true),stereoImage=render(s,true);
+            unsigned depthDifference=0,stereoDifference=0;
+            for(size_t i=0;i<depthImage.size();++i){
+                depthDifference+=unsigned(std::abs(int(depthImage[i]&255)-int(initialPreview[i]&255)));
+                stereoDifference+=unsigned(std::abs(int(stereoImage[i]&255)-int(initialStereo[i]&255)));
+            }
+            require(double(depthDifference)/depthImage.size()<.1,"Changing network scale made the depth preview flash");
+            require(double(stereoDifference)/stereoImage.size()<.1,"Changing network scale made the stereo picture bounce");
+        }
+        nearView=savedNearView;
     }
     std::cout<<"PASS: near/far eye disparity, unchanged image without depth, depth view, and HDR network colors at three desktop white levels\n";return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}

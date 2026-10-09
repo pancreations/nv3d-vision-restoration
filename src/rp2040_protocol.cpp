@@ -89,11 +89,13 @@ Result Scheduler::enqueue(Frame f,uint64_t now) {
     if(hadFrame_) {
         if(config_.frameAnchored&&(frameStart<config_.frameGuardUs||lastClose_>frameStart-config_.frameGuardUs))return reject(Result::Overlap);
         if(f.openUs<lastClose_+guardUs)return reject(Result::Overlap);
-        if(f.eye==lastEye_)return reject(Result::WrongEye);
         if(frameStart<lastOpen_)return reject(Result::BadConfig);
         const auto delta=frameStart-lastOpen_;
-        // Do not free-run across missing display frames. Reacquire a session.
-        if(delta+100<config_.periodUs||delta>config_.periodUs+100)return reject(Result::BadConfig);
+        if(delta+100<config_.periodUs)return reject(Result::BadConfig);
+        // Each command supplies an explicit future display boundary and eye.
+        // After a missed slot, accept that boundary without stopping the session
+        // or inventing transitions for the gap. Ordinary cadence still alternates.
+        if(delta<=config_.periodUs+100&&f.eye==lastEye_)return reject(Result::WrongEye);
     }
     auto& e=queue_[(head_+count_)%capacity];e={f,f.openUs+duration,false};++count_;
     lastSequence_=f.sequence;lastClose_=e.closeUs;lastOpen_=frameStart;lastEye_=f.eye;
@@ -183,7 +185,7 @@ Exchange DeviceEndpoint::receive(std::span<const uint8_t> bytes,uint64_t now,uin
     Message response;response.opcode=Opcode::Reply;response.session=m.session;response.request=m.request;response.length=32;
     auto p=std::span<uint8_t>(response.payload);
     p[0]=uint8_t(result);p[1]=uint8_t(m.opcode);
-    p[2]=uint8_t((simulated_?0x80:0x40)|extendedCadenceFlag|apertureFlag|fastCadenceFlag|(scheduler_.ready()?1:0)); // capabilities do not claim optical calibration
+    p[2]=uint8_t((simulated_?0x80:0x40)|extendedCadenceFlag|apertureFlag|fastCadenceFlag|gapRecoveryFlag|(scheduler_.ready()?1:0)); // capabilities do not claim optical calibration
     p[3]=uint8_t(Scheduler::capacity);put32(p.subspan(4),uint32_t(scheduler_.queued()));
     put64(p.subspan(8),now);put64(p.subspan(16),replyTime);put64(p.subspan(24),bootId_);
     if(m.opcode==Opcode::Status) {

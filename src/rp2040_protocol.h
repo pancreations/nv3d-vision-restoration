@@ -14,6 +14,7 @@ constexpr uint8_t protocolVersion = 1;
 constexpr uint8_t extendedCadenceFlag = 2;
 constexpr uint8_t apertureFlag = 4;
 constexpr uint8_t fastCadenceFlag = 8;
+constexpr uint8_t gapRecoveryFlag = 16;
 enum class Opcode : uint8_t { Hello=1, Clock=2, Configure=3, Schedule=4, Stop=5, Status=6, Diagnostics=7, ConfigureAperture=8, Reply=128 };
 enum class Result : uint8_t {
     Ok, BadPacket, BadVersion, BadOpcode, BadLength, BadChecksum,

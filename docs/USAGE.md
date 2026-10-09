@@ -11,10 +11,14 @@ sequences need separate optical validation. RP2040 OLED operation at 120 Hz and
 > under **Input/Games**. Isolated renderer/transport tests pass; broad game and
 > optical validation remains incomplete. Resident Evil 2 and Metal Gear Solid V
 > retain unresolved failures. Earlier game trials are historical; see
-> [current status](STATUS.md). Window capture remains a proven fallback.
+> [current status](STATUS.md). Earlier successful window-capture trials used
+> Windows Graphics Capture; they do not establish working DXGI game capture.
 > The old depth-based ReShade hook remains nonworking.
 
 Double-click **Launch.cmd** to run `build/bin/Release/VisionRestoration.exe`.
+After replacing the executable, `VisionRestoration.exe --restart` asks the
+running instance to save and close normally, then opens the replacement. It
+waits up to 30 seconds and never force-terminates the old instance.
 
 ## Live controls
 
@@ -44,10 +48,11 @@ loading also restores the saved image brightness and black level.
 
 Stereo shaders are compiled when building the app. Switching between fullscreen
 and preview no longer recompiles them or blocks Stop on shader compilation.
-Stopping the renderer continues servicing synchronous Windows messages, so a
-fullscreen transition cannot deadlock while DXGI waits for the control window.
-AI desktop capture excludes the app's preview, fullscreen output and controls
-in every view, preventing the converted image from capturing itself.
+Stopping the renderer continues servicing synchronous Windows messages to avoid
+blocking DXGI while it waits for the control window.
+AI desktop capture requests Windows capture exclusion for the app's preview,
+fullscreen output and controls. That request alone does not verify the captured
+pixels or establish working capture beneath an output overlay.
 
 ## Output
 
@@ -59,7 +64,8 @@ in every view, preventing the converted image from capturing itself.
   returns to the previous window size and position; **Esc** or the close button
   stops the preview. Keep it on the selected output display for calibrated timing.
 - **Fullscreen 3D** opens the same stereo output fullscreen. **Stop** or **Esc**
-  returns to the controls.
+  returns to the controls. **Fullscreen 3D / F11** starts stereo even after
+  **Inspect eye images**; it does not retain the emitter-free inspection mode.
 - **Inspect eye images** displays the actual two eye images side by side in 2D.
 - **Left image only / Right image only** makes the other image completely black.
 - **Both eye targets** checks separation; **Stereo scene** returns to the depth scene.
@@ -114,6 +120,30 @@ Profiles now use version 10 for neutral reset. Older profiles retain their timin
 horizontally, and scene depth changes the built-in stereo scene's camera separation.
 Both apply live. Diagnostic eye-isolation targets stay fixed.
 **Sources & games** selects stereo images, VLC stereo movies, window capture or the whole screen converted with AI depth. Spout and Blender viewport inputs have been removed. The game-output controls connect existing Geo11 fixes; broader API coverage remains in development.
+
+Starting a preview, eye inspection or fullscreen output also starts the selected
+window source if capture is stopped. Choose the source window and packing first;
+there is no separate **Start source** step required for window capture.
+
+Window capture offers two backends. The default, Windows Graphics Capture, uses a two-buffer
+pool and selects the newest available frame. DXGI Desktop Duplication captures
+a display and crops it to the window; it does not provide an isolated window
+image. See [Advanced capture method](#advanced-capture-method) for the current
+limitations and validation status. For compatible stereo providers,
+**Connect game** and the direct game source receive shared game textures without
+either desktop capture backend.
+
+Output uses a waitable `FLIP_DISCARD` swap chain: eye inspection queues at most
+three presents, while frame-sequential stereo reserves about 25 ms, scaled to
+the display refresh rate and clamped to three through eight queued presents
+(six at 240 Hz) for either emitter. The buffer count is the queue depth plus
+one (minimum four). Flip model permits independent
+flip but does not force DWM bypass; window style, overlapping windows, display
+configuration and driver support affect eligibility. Fullscreen input
+passthrough currently uses a layered overlay. Check the presentation mode in the
+session diagnostics or PresentMon on the actual system before assuming hardware
+independent flip. Queue depth alone does not establish measured
+capture-to-display latency.
 **Profiles** saves named setups; timing and scene changes also autosave.
 **Diagnostics** reports presentation/USB timing and runs checks of the rendered
 pixels. **Advanced** holds per-eye timing, sequences, emitter connection and modes.
@@ -149,27 +179,30 @@ time. That is what a viewer sees as the picture jumping sideways and flashing.
 Only the glasses resolve the sequence, because only they are synchronized to it.
 No encoder setting fixes this.
 
-So the recorder gets its own picture. Under **Input**, tick **2D stream view**.
+**2D stream view is disabled for Capture window with DXGI Desktop Duplication.**
+The visible stream window could be captured as part of the desktop and feed its
+image back into the source. Select **Windows Graphics Capture** to use the
+stream view with a captured window.
+
+The recorder gets its own picture. Under **Input**, tick **2D stream view**.
 The presenter then draws one eye, at up to 60 pictures a second, into a second
 window, without the stereo band, the eye shift, the crosstalk subtraction or the
 brightness gain - those exist to make an alternating image look right through the
 glasses and look wrong on a flat capture. Two options sit beside it:
 
 - **Cover the display** (default): the stream view covers the output display
-  underneath the 3D output, and the 3D output is removed from screen capture the
-  same way the whole-screen conversion already removes it. Share **the screen**
+  underneath the 3D output, which requests Windows capture exclusion. Share **the screen**
   in Discord or OBS. The mirror stays between the stereo output and the game
-  when the game gains focus. A direct-eye provider may stop presenting its own
-  window while covered; a window-capture source continues drawing its packed eyes.
+  when the game gains focus. A source application may stop presenting its own
+  window while covered; continued source updates need checking with that application.
 - **Cover the display** off: the stream view is an ordinary window you can move
   and resize. Share the window named **Vision Restoration stream view (2D)**.
 
-Built 2026-09-22 and not yet watched from the receiving end of a call. The
-capture exclusion that **Cover the display** relies on is the same one the
-whole-screen conversion already uses successfully, but whether a covered window
-keeps feeding a screen capture has not been confirmed here. If a screen share
+Built 2026-09-22 and not yet watched from the receiving end of a call. Whether
+capture exclusion and covered-window updates work together in a screen share
+has not been confirmed here. If a screen share
 comes out frozen or black, untick **Cover the display** and share the stream
-view window instead; window capture does not depend on that behaviour.
+view window instead.
 
 **Right eye** streams the other eye instead. The glasses keep the full stereo
 sequence in every case; nothing about the calibration changes.
@@ -193,11 +226,13 @@ output position; it does not hide the stereo or stream window. Stop output with
 the existing Stop control or shortcut.
 
 For repeatable diagnosis of an already running SBS game, start the app with
-`--capture-pid <game PID> --start-fullscreen --stream-view`. Add `--stream-window`
-for the separate capture window. These options do not launch or modify the game.
+`--capture-pid <game PID> --start-fullscreen`. With Windows Graphics Capture
+selected, add `--stream-view` to open the 2D stream view, and `--stream-window`
+for a separate stream window. These options do not launch or modify the game.
 
-The whole-screen AI depth conversion needs none of this: it already hides its
-output from capture, so a recorder sees the plain 2D desktop.
+Whole-screen AI depth conversion requests capture exclusion for its output so
+a screen recorder can receive the underlying 2D desktop. Verify the recorder's
+image before relying on that exclusion.
 
 ## Whole screen in 3D (AI depth)
 
@@ -213,8 +248,8 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
 
 - **Start screen 3D** captures the chosen display and lays the stereo output over the output
   display as a click-through window: mouse and keyboard go through to
-  the desktop, and Windows draws the cursor above it at screen depth. The overlay is hidden from
-  screen capture so it never captures itself. **Ctrl+Alt+F8** stops it; **Ctrl+Alt+PageUp /
+  the desktop, and Windows draws the cursor above it at screen depth. The app requests
+  Windows capture exclusion for the overlay to prevent feedback. **Ctrl+Alt+F8** stops it; **Ctrl+Alt+PageUp /
   PageDown** change the depth strength, **Ctrl+Alt+Home / End** move the screen plane, and
   **Ctrl+Alt+Insert** switches between 2D and 3D while the overlay is up. The controls under
   **Sources & games** stay clickable through the overlay.
@@ -249,8 +284,10 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
   or **120 Hz with Left / Right**. Desktop conversion follows that stereo frame rate;
   AI depth updates run independently and can be slower without limiting desktop motion
   to the depth update rate. Actual performance depends on GPU load and capture delivery.
-- **Responsive desktop** selects Depth Anything V2 Small, a 518 px input, low temporal
-  smoothing and a saved limit of 60 depth updates/s. **Actual depth** reports measured
+- **Responsive desktop** selects Depth Anything V2 Small, a 518 px input, balanced
+  temporal smoothing (0.5, the original default) and a saved limit of 60 depth updates/s.
+  The faster update limit keeps temporal smoothing enabled at the original strength;
+  the preset's model and input resolution are unchanged. **Actual depth** reports measured
   updates/s and map age separately from inference time and desktop frame rate. The
   depth helper reserves GPU time for stereo output, so Large at Fine resolution can
   update only a few times per second even while desktop rendering stays at 60 fps.
@@ -261,10 +298,28 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
 - **Depth strength** is the parallax at infinity as a share of the screen width (2 % default).
   **Screen plane** is the nearness that sits on the screen: 1 keeps everything behind the glass,
   lower values bring the nearest content out, limited by **Pop-out limit**. **Depth smoothing**
-  averages the network's depth over time. **Network input** trades speed for detail (518 px is
+  suppresses isolated noise and keeps shared shifts in the network's depth scale from moving
+  the whole scene. Smoothing follows elapsed time, so slower AI updates keep similar damping;
+  sustained motion follows promptly and a scene cut resets the old depth. **Network input** trades speed for detail (518 px is
   about 5 ms per depth map with Small on an RTX 5070 Ti; the map can refresh up to 60 times a second and the
-  eyes are redrawn for every new desktop frame). **Show depth map** shows what the network sees:
-  brighter is nearer, mid grey is the screen plane.
+  eyes are redrawn for every new desktop frame). Choose **Fine (924 px)** or
+  **Maximum detail (1036 px)** for a denser estimate, at the cost of slower updates.
+- **Depth map controls**, available in both **Tuning** and the AI source panel, shape the
+  estimated map only when **Enable map adjustments** is checked. It starts off each session, preserving the original normalized map and stereo effect. The original preview uses mid gray for the screen plane. **Show depth map** previews the adjusted
+  map: black is far (0), white is near (1), independent of the screen-plane setting.
+  **Far point** clips lower values to black; **Near point** clips higher values to white.
+  Bringing those levels closer expands depth differences within that range. They are relative
+  values, not physical distances. **Map contrast** expands differences around mid gray;
+  **Midtone gamma** above 1 moves middle depths nearer, and below 1 moves them farther.
+  **Local detail** enhances small variations already present in the estimate; **Detail radius**
+  chooses their scale in map pixels. Start with a small amount: strong enhancement can amplify
+  noise and halos, and cannot recover geometry the network missed. **Invert depth** swaps near
+  and far before levels are applied. The buttons below the sliders offer **Original** (the
+  original unadjusted map), **Medium detail** (gentle range expansion and detail enhancement),
+  and **High detail** (stronger range expansion and enhancement). **Original** also resets
+  map adjustments. Presets leave stereo strength, screen plane, model and resolution unchanged;
+  every slider remains adjustable afterward. Adjustments apply
+  live when enabled, including on an unchanged desktop. Slider values are saved with the display profile; enabling them requires explicit opt-in each session.
 - The depth map is a few hundred pixels across and sampled bilinearly, so depth edges are soft
   over about 7 screen pixels; a moving edge also lags the picture by one network run. Guided
   upsampling of the depth to the picture's edges is the next step if that shows.
@@ -295,6 +350,38 @@ process, `VisionDepth.exe`, at a low GPU scheduling class so its work queues beh
   for ten seconds without any overlay or emitter, and writes `reports/screen-test.txt` with the
   timings, `reports/screen-sbs.png` (both eyes) and `reports/screen-depth.png` (the depth view).
   `--display N` picks another display.
+
+## VRto3D SBS / TAB input
+
+Select **Input/Games > Source > VRto3D (SBS / TAB)**, choose its automatically
+discovered **Window** (or use **Show all windows**), and match **Packing** to
+**Half SBS**, **Full SBS**, **Half TAB (top / bottom)** or **Full TAB (top / bottom)**.
+Optionally select the game's separate **Game input** window, click **Start
+source**, then use eye inspection, preview or fullscreen output.
+
+Before fullscreen, open VRto3D's **Ctrl+Home > System** menu, turn **Auto Focus
+OFF**, and **Save Default Cfg** to release its own foreground lock. Keep the
+captured window visible and unminimized behind the output. This source always
+uses Windows Graphics Capture and does not focus the captured VRto3D window.
+**Launch-VRto3D.cmd** or `VisionRestoration.exe --vrto3d` opens this source panel.
+See [setup, packing and validation limits](VRTO3D.md); real VR gameplay and
+optical performance remain unverified.
+
+## Wibble Wobble input
+
+Select **Input/Games > Source > Wibble Wobble** to connect to the running
+SteamVR session. After the first image arrives, the embedded 3D preview starts
+if the emitter is ready and the display rate and timing are compatible. Otherwise,
+connect the emitter, match the display rate, then click **Start 3D preview**.
+**Inspect eye images** explicitly opens a 2D side-by-side view without emitter
+commands. **Fullscreen 3D / F11** starts stereo, and **Reconnect input** preserves
+an already running output. While stereo runs, Wibble's competing output window
+is moved off-screen and restored on Stop. Choosing that window in **Capture
+window** automatically uses the direct eye feed instead of capturing alternating
+eye and black frames. If SteamVR
+has administrator permissions, **Connect to administrator SteamVR** reopens the
+app with matching permissions after Windows UAC approval. Cancelling keeps the
+current app running. See [input details and validation limits](WIBBLE-WOBBLE.md).
 
 ## Games (existing Geo11 fixes)
 
@@ -385,3 +472,66 @@ In the left **Input/Games** tab, choose the game's EXE and click **Prepare game*
 Launch the game normally through its launcher. While prepared, the app watches the exact executable path every 100 ms, including while minimized or on Tuning. It attaches the stereo reader when the matching process publishes its provider, without requiring a game window first. Once a complete pair and a foreground game window exist, the app starts its frame-sequential output automatically. Use windowed/borderless mode on the selected output display. Detection is automatic, not a guarantee of zero startup latency.
 
 The status distinguishes waiting for launch, waiting for the provider, connected/waiting for eyes, and active 3D. When the game process exits, the app remains prepared for its next launch. **Cancel preparation / stop game 3D**, Stop capture, switching sources/games, or Escape from output cancels preparation. A provider/startup failure is shown as an error, not reported as active 3D. Preparation does not repair a renderer that crashes before providing usable eyes.
+
+### Advanced capture method
+
+**DXGI game capture was reported nonworking by the user on 2026-10-07.** Earlier
+synthetic capture tests and latency reports do not establish that a real game
+works beneath the stereo output. A passing fixture or a selected backend name
+must not be reported as successful gameplay capture.
+
+The **AI desktop** and **Capture window** panels have independent **Capture
+method** selectors. **Capture window** defaults to **Windows Graphics Capture**
+to isolate the source from overlapping windows; **AI desktop** defaults to
+**DXGI Desktop Duplication**. Changing a source panel's selector restarts its
+active capture. The two preferences are also available under **Settings >
+Advanced capture** as **AI desktop capture** and **Window capture**; stop capture
+before changing them there. Both preferences are saved with the display profile.
+Older profiles retain their saved desktop preference and default window capture
+to Windows Graphics Capture. **VRto3D** always uses Windows Graphics Capture.
+There are no automatic backend fallbacks. **Active capture** shows the selected
+backend and any acquisition or waiting status; a backend name alone does not
+mean a frame was received. AI desktop always captures the selected monitor,
+regardless of the previously selected window.
+
+DXGI captures desktop pixels and crops window sources to their client area.
+It cannot recover game pixels outside the captured display or independently
+capture a window hidden behind ordinary covering windows. Covering windows
+appear in the desktop crop; capture does not freeze based on an inferred list
+of covering windows. Pixels outside the capture display are padded black in
+the original client-sized image, including portions on another monitor, so the
+stereo split does not shift. This implementation requires the capture display to use the
+output GPU and an unrotated display. The app requests capture exclusion for its
+controls and stereo output, but that does not guarantee usable live game frames
+beneath them. A minimized or hidden source retains its last complete stereo
+pair, if one was received.
+Keep Windows Graphics Capture selected when window isolation is needed.
+The 2D stream view is disabled for DXGI window capture to prevent feedback;
+choose Windows Graphics Capture to use it.
+Color handling follows the actual captured texture format; a display's HDR
+setting alone does not establish captured HDR precision. Display changes and
+temporary desktop access or session limits retry duplication using the same
+backend, with a waiting status. Capture copies use GPU textures; actual latency
+and frame rate require measurement on your setup.
+
+Changing one capture preference leaves the other source's preference unchanged.
+Stereo packing, AI conversion and direct shared-eye game providers remain
+separate controls.
+
+The reproducible capture benchmark is `vision_gpu_capture_bench.exe <report.csv> [idle|load] [waitable] [excluded-overlay]`. It displays a temporary 1280x720 animated window, using HDR when enabled on the display, and compares explicit DXGI and Windows capture through the real stereo-source pipeline. GPU-visible frame numbers tie measurements to a common producer clock. It also measures full-screen conversion with depth inference disabled. `load` adds 4K HDR GPU work. Each scenario runs twice in opposite backend order. The measured delay ends at the completed source copy; it excludes stereo output, emitter timing and the panel. The benchmark does not change display settings or enable fallback capture.
+
+Use `vision_gpu_capture_bench.exe <report.csv> idle waitable excluded-overlay`
+to check changing source pixels beneath a temporary full-display D3D overlay
+with Windows capture exclusion. Each scenario requires at least ten distinct
+source frame markers and verifies overlay presentation. The CSV records
+`overlay_mode`, `overlay_presents`, `unique_capture_fps`,
+`changing_pixels_verified` and `invalid_markers`. This tests the synthetic
+window and desktop-conversion paths; it does not verify live-game capture.
+
+The benchmark reports two separate latency measures: `producer_to_copy_*` includes the producer and desktop queues, while `capture_handling_*` measures from capture API delivery until the GPU-completed source texture is published. Desktop handling includes its conversion cadence. These numbers must not be substituted for each other. Window GPU completion uses a bounded 0.5 ms spin before sleeping to reduce scheduling delays; this trades some CPU time for lower typical latency and does not guarantee a 1 ms deadline. Flat desktop frames are copied directly into both shared eyes; depth reprojection still uses the stereo shader.
+
+For presentation-queue diagnosis, use `vision_gpu_capture_bench.exe <report.csv> idle waitable` (or `load waitable`). This creates the test producer with a frame-latency waitable swap chain, limits its queue to one frame, and waits before rendering each frame. It does not change capture or the presentation settings of other applications. The CSV labels `producer_mode` and reports `producer_to_capture_*`, from marker submission until capture API delivery, separately from capture handling. Compare like producer modes; improving the test producer is not an improvement to the receiver. A locked or secure desktop prevents DXGI measurements; a header-only CSV from a failed run contains no latency result.
+
+Capture startup applies the same process scheduling policy used by stereo output, requesting CPU execution and timer-resolution policies suitable for latency-sensitive work while the app is covered or minimized. This applies across source types; it does not change producer or compositor queues or guarantee a deadline. No capture backend is switched automatically.
+
+Use `vision_direct_capture_bench.exe <report.csv> [load]` to measure an offscreen D3D11 FP16 producer through the actual native stereo source at 1280x720 and 3840x2160 per eye. It measures first-eye render submission through publication of the GPU-completed source snapshot, verifies both eyes and all four corners, and reports frames at or above 1 ms. It excludes desktop composition and physical output and cannot establish latency for arbitrary applications. The load case adds eight 4K HDR clears before each pair. Its short-timer diagnostic and producer/receiver completion columns help investigate long scheduling stalls; neither average nor percentile results guarantee a hard deadline.

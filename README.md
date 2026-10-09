@@ -6,7 +6,7 @@ Vision Restoration talks to the emitter directly and shows frame-sequential 3D i
 
 > **Status: personal project, experimental portable release.** Treat every display, game and timing profile as unverified until checked through each lens.
 >
-> - **Proven game source:** side-by-side 3D captured from a window into the app, demonstrated with Dolphin on the 240 Hz OLED setup. The user also confirms OLED operation at 120 Hz (2026-09-15).
+> - **Previously demonstrated game source:** side-by-side 3D through Windows Graphics Capture, demonstrated with Dolphin on the 240 Hz OLED setup. This does not validate DXGI Desktop Duplication, which the user reports has never worked in their gameplay setup (2026-10-07). The user also confirms OLED operation at 120 Hz (2026-09-15).
 > - **Shared Geo11 hook implemented, experimental:** x86/x64 output preserves the existing fix's SBS/TAB/Katanga mode, with game-depth sliders in the app. Prepare game arms automatic connection before launch. Isolated renderer/transport tests pass, but real-game compatibility is unresolved: Resident Evil 2 encountered GPU hangs and Metal Gear Solid V still has an unresolved user-reported startup failure. Neither game is listed as supported.
 > - **VLC movie source implemented:** direct SDR playback of SBS/TAB files using installed 64-bit VLC 3.x; movie viewing through the glasses remains unverified.
 > - **Still incomplete:** broad Helix/3Dmigoto coverage, native NVAPI stereo, DX9/10, native DX12 and other media-player integrations. The earlier depth-based ReShade hook remains nonworking; the separate direct-eye capture add-on is experimental.
@@ -21,7 +21,9 @@ Vision Restoration talks to the emitter directly and shows frame-sequential 3D i
 | Source | Status |
 |---|---|
 | Geo11 DX11 output, x86 and x64 | Prepare/automatic connection and depth controls implemented; isolated tests pass, real-game crashes remain unresolved. See [status](docs/STATUS.md). |
-| Window capture of side-by-side 3D output (proven with Dolphin set to side-by-side) | **Working fallback.** |
+| Windows Graphics Capture of side-by-side 3D output | Previously demonstrated with Dolphin set to side-by-side. DXGI gameplay remains unverified. |
+| VRto3D SBS / TAB input | Dedicated Windows Graphics Capture source with Half/Full SBS/TAB and separate game input focus; real VR gameplay and optical validation pending. See [setup](docs/VRTO3D.md). |
+| Wibble Wobble / SteamVR eye input | Direct compositor eye textures with automatic connection and preview; eye-pair timing and real VR gameplay remain unverified. See [setup](docs/WIBBLE-WOBBLE.md). |
 | VLC stereo movies (SBS or top/bottom) | Direct VLC 3.x source with audio, pause and seeking; SDR only, optical validation pending. |
 | AI desktop | Available; converts captured 2D content using estimated depth |
 | In-game hook (`VisionGameHook`, `adapters/vision_hook.cpp`) | **Does not work, has never worked** |
@@ -68,13 +70,13 @@ The glasses must admit the intended eye's light while excluding the other eye's 
 
 ### 1. Download the portable release
 
-Download `Vision-Restoration-Portable-v0.3.0.zip` from [GitHub Releases](https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.3.0), extract the entire archive to a writable folder, and run `Start Vision Restoration.cmd`. The ZIP includes the complete application, AI helper and redistributable AI runtime, emitter utilities, x86/x64 game integration, and required runtime files. It never includes NVIDIA's proprietary emitter firmware, AI model weights, Geo11, or a game-specific fix.
+Download `Vision-Restoration-Portable-v0.3.5.zip` from [GitHub Releases](https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.3.5), extract the entire archive to a writable folder, and run `Start Vision Restoration.cmd`. The ZIP includes the complete application, AI helper and redistributable AI runtime, emitter utilities, x86/x64 game integration, and required runtime files. It never includes NVIDIA's proprietary emitter firmware, AI model weights, Geo11, or a game-specific fix.
 
-**New in v0.3.0:** explicit **Half SBS** and **Full SBS** for VLC movies, stereo images and window capture, with correct eye proportions and black bars where needed. Adds a movable, resizable **Windowed preview** with F11 fullscreen switching, and permits a captured window on a different monitor from the stereo output. See the [release notes](docs/RELEASE-v0.3.0.md). Gameplay under sustained load and optical performance still need validation.
+**Alpha 0.3.5** is the project's first regular GitHub release. It adds experimental **Wibble Wobble / SteamVR eye input**, dedicated **VRto3D SBS / TAB** capture, independent capture-method choices, AI depth-map controls and stabilization, and emitter recovery improvements. See the [release notes](docs/RELEASE-v0.3.5.md). The software remains alpha; gameplay under sustained load and optical performance still need validation.
 
 Whole-screen AI depth needs a model file placed in the included empty `models\` folder. Download [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx) for the fastest option. [Base](https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx) and [Large](https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx) are slower and licensed for non-commercial use. Save each model with a distinct filename. Normal stereo images, window capture, game integration and emitter operation do not need a model.
 
-The release ZIP includes **Vision Restoration README.pdf** generated from this README, **README.md**, and **Vision Restoration Quick Start.pdf**. Both PDFs are also available beside the ZIP on the release page. This is an experimental prerelease, not a stable game-compatibility release.
+The release ZIP includes **Vision Restoration README.pdf** generated from this README, **README.md**, and **Vision Restoration Quick Start.pdf**. Both PDFs are also available beside the ZIP on the release page. Alpha 0.3.5 is published without GitHub's prerelease flag; the experimental compatibility limits above still apply.
 
 ### Downloads not included in the public ZIP
 
@@ -150,6 +152,14 @@ Before updating or removing a community fix, close the game and use **Disconnect
 
 Install [64-bit VLC 3.x](https://www.videolan.org/vlc/), then select **Input/Games > Source > VLC stereo movie**, choose **Half SBS**, **Full SBS** or **Top / bottom** under **Packing**, use **Choose movie...**, and click **Start source**. The same packing choices are available for **Stereo image** and **Capture window**. Half SBS restores squeezed eye widths; Full SBS retains each eye's native proportions. Both preserve the intended aspect ratio. Start the calibrated **3D preview**, **Windowed preview** or fullscreen output. Restart the source after changing packing. Audio, pause/resume, volume and seeking are available under Input/Games. For portable VLC, use **Choose VLC...** and select its `vlc.exe` with the complete installation folder present. See [VLC playback details](docs/USAGE.md#vlc-stereo-movies).
 
+### 7. Capture VRto3D SBS or TAB
+
+Use **Launch-VRto3D.cmd**, or select **Input/Games > Source > VRto3D (SBS / TAB)**. Choose the VRto3D window, match **Half/Full SBS** or **Half/Full TAB**, optionally select the separate **Game input** window, and click **Start source** before starting preview or fullscreen output. In VRto3D's **Ctrl+Home > System** menu, turn **Auto Focus OFF** and **Save Default Cfg** so its foreground lock stops competing with the output. Keep its window visible and unminimized. This route always uses Windows Graphics Capture; actual VR gameplay remains unverified. See the [VRto3D setup guide](docs/VRTO3D.md).
+
+### 8. Connect Wibble Wobble / SteamVR eyes
+
+With SteamVR, Wibble Wobble/VRto3D and the VR application running, use **Launch-WibbleWobble.cmd** or select **Input/Games > Source > Wibble Wobble**. The app connects to SteamVR's compositor eye textures and starts the embedded 3D preview when images, the emitter and compatible timing are ready. Use **Windowed preview** or **Fullscreen 3D** for other output modes. Wibble's competing display window is temporarily moved off-screen during stereo and restored on Stop. This experimental source does not guarantee that both eyes came from the same compositor frame. See [setup and validation limits](docs/WIBBLE-WOBBLE.md).
+
 Every control is explained in [docs/USAGE.md](docs/USAGE.md). Emitter details and troubleshooting are in [docs/EMITTER.md](docs/EMITTER.md).
 
 Self tests that need no emitter:
@@ -163,7 +173,7 @@ Self tests that need no emitter:
 
 - [x] Original emitter control without the NVIDIA stereo driver
 - [x] Clean full-screen 3D through the glasses on a 240 Hz OLED (black frame insertion, SDR and HDR)
-- [x] Side-by-side capture from a window (proven with Dolphin)
+- [x] Side-by-side capture using Windows Graphics Capture (demonstrated with Dolphin)
 - [ ] Whole screen converted with AI depth (built 2026-09-15, checked on the desktop, not yet through the glasses)
 - [ ] Stable app-hosted Geo11 DX11 gameplay; capture is implemented, game compatibility remains unresolved
 - [ ] Broad compatibility with existing 3D Vision games and community fixes
@@ -185,6 +195,9 @@ Self tests that need no emitter:
 - [Timing calibration](docs/TIMING-CALIBRATION.md)
 - [Full screen at 120 Hz](docs/FULLSCREEN-120HZ.md)
 - [DIY RP2040 emitter](docs/RP2040.md)
+- [VRto3D SBS / TAB input](docs/VRTO3D.md)
+- [Wibble Wobble / SteamVR eye input](docs/WIBBLE-WOBBLE.md)
+- [Alpha 0.3.5 release notes](docs/RELEASE-v0.3.5.md)
 - [Development log](docs/STATUS.md)
 
 ## Contributing

@@ -14,16 +14,19 @@ template<class F>void rejects(F f,const char* s){bool threw=false;try{f();}catch
 class ModelLink : public Link {
 public:
     double time=100000;
-    DeviceEndpoint device{1234,false};bool corrupt=false,disconnected=false,simulated=false,legacy=false,noAperture=false;
+    DeviceEndpoint device{1234,false};bool corrupt=false,disconnected=false,simulated=false,legacy=false,noAperture=false,noGapRecovery=false;
     std::vector<Message> requests;
+    Result scheduleResult=Result::Ok;
     Packet exchange(const Packet& p,std::stop_token stop)override {
         if(stop.stop_requested()||disconnected)throw std::runtime_error("link disconnected");
         Message m;check(decode(p,m)==Result::Ok,"host request parse");requests.push_back(m);
         time+=20;auto e=device.receive(p,uint64_t(time+5000),uint64_t(time+5000));time+=30;
         check(e.reply.has_value(),"model returns reply");auto packet=*e.reply;
+        if(m.opcode==Opcode::Schedule&&scheduleResult!=Result::Ok){Message r;decode(packet,r);r.payload[0]=uint8_t(scheduleResult);packet=*encode(r);}
         if(simulated){Message r;decode(packet,r);r.payload[2]|=0x80;packet=*encode(r);}
         if(legacy){Message r;decode(packet,r);r.payload[2]&=uint8_t(~(extendedCadenceFlag|apertureFlag|fastCadenceFlag));packet=*encode(r);}
         if(noAperture){Message r;decode(packet,r);r.payload[2]&=uint8_t(~(apertureFlag|fastCadenceFlag));packet=*encode(r);}
+        if(noGapRecovery){Message r;decode(packet,r);r.payload[2]&=uint8_t(~gapRecoveryFlag);packet=*encode(r);}
         if(corrupt)packet[16]^=1;
         return packet;
     }
@@ -45,6 +48,13 @@ void host() {
     rejects([&]{c.schedule(Eye::Left,link.time+100);},"host refuses insufficient lead before sending");
     c.stop();
     c.start({16667,1500,1500});c.stop();
+    for(auto result:{Result::TooFar,Result::QueueFull}){
+        ModelLink busy;Client busyClient(busy,[&]{return busy.time;});
+        for(int n=0;n<4;++n)busyClient.sampleClock();busyClient.start({});
+        const auto session=busyClient.status().session;busy.scheduleResult=result;
+        bool caught=false;try{busyClient.schedule(Eye::Left,busy.time+4000);}catch(const ScheduleMiss& miss){caught=true;check(!miss.restartRequired,"Transient scheduling rejection must not restart the shutters");}
+        check(caught&&busyClient.status().session==session,"Transient queue/horizon rejection retains the session");busyClient.stop();
+    }
     ModelLink old;old.legacy=true;Client legacy(old,[&]{return old.time;});legacy.inspect();
     check(!legacy.status().extendedCadence,"old firmware remains distinguishable");
     rejects([&]{legacy.start({16667,1500,1500});},"old firmware rejects LCD preload before arming");
@@ -68,8 +78,18 @@ void host() {
     for(int n=0;n<4;++n)recovering.sampleClock();
     recovering.start({8333,750,750,true,4000,4000,250});
     auto first=recovery.time+4000;recovering.schedule(Eye::Left,first);
-    bool missed=false;try{recovering.schedule(Eye::Right,first+16666);}catch(const ScheduleMiss&){missed=true;}
-    check(missed,"missing refresh surfaces as a recoverable scheduling miss");
+    const auto gapSession=recovering.status().session;
+    recovering.schedule(Eye::Left,first+16666);
+    check(recovering.status().session==gapSession,"missing refresh accepts explicit eye without shutter restart");
+    bool missed=false;try{recovering.schedule(Eye::Left,first+24999);}catch(const ScheduleMiss& miss){missed=true;check(!miss.restartRequired,"rejected event retains active session");}
+    check(missed,"duplicate eye at ordinary cadence rejected without restart");
+    recovering.schedule(Eye::Right,first+24999);
+    ModelLink oldRecovery;oldRecovery.noGapRecovery=true;Client oldRecovering(oldRecovery,[&]{return oldRecovery.time;});
+    for(int n=0;n<4;++n)oldRecovering.sampleClock();
+    oldRecovering.start({});const auto oldFirst=oldRecovery.time+4000;
+    oldRecovering.schedule(Eye::Left,oldFirst);
+    missed=false;try{oldRecovering.schedule(Eye::Left,oldFirst+8333);}catch(const ScheduleMiss& miss){missed=true;check(miss.restartRequired,"older firmware requires restart for parity rejection");}
+    check(missed&&!oldRecovering.status().gapRecovery,"gap capability distinguishes installed older firmware");
     recovering.stop();recovering.start({8333,750,750,true,4000,4000,250});
     recovering.schedule(Eye::Left,recovery.time+4000);recovering.stop();
     recovering.start({8333,750,750,true,4000,4000,250});

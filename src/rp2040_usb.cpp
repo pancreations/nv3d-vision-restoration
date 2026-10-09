@@ -34,7 +34,7 @@ public:
             unsigned char firmware[128]{};const auto firmwareLength=libusb_get_string_descriptor_ascii(handle_,5,firmware,sizeof(firmware));
             if(firmwareLength<=0)throw std::runtime_error("RP2040 firmware build identity missing");
             firmware_.assign(reinterpret_cast<char*>(firmware),size_t(firmwareLength));
-            if(!firmware_.starts_with("VRP1/0.2.0/")&&!firmware_.starts_with("VRP1/0.3.0/")&&!firmware_.starts_with("VRP1/0.4.0/"))throw std::runtime_error("Unsupported RP2040 firmware version");
+            if(!firmware_.starts_with("VRP1/0.2.0/")&&!firmware_.starts_with("VRP1/0.3.0/")&&!firmware_.starts_with("VRP1/0.4.0/")&&!firmware_.starts_with("VRP1/0.4.1/"))throw std::runtime_error("Unsupported RP2040 firmware version");
             libusb_config_descriptor* c=nullptr;
             if(libusb_get_active_config_descriptor(libusb_get_device(handle_),&c)<0||!c)throw std::runtime_error("Cannot inspect RP2040 endpoints");
             bool valid=false;

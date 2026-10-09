@@ -16,9 +16,13 @@ public:
 struct HostStatus {
     uint64_t bootId=0, session=0, lastEpoch=0, events=0;
     double roundTripUs=0, uncertaintyUs=0;
-    bool simulated=false, clockReady=false, extendedCadence=false, aperture=false, fastCadence=false;
+    bool simulated=false, clockReady=false, extendedCadence=false, aperture=false, fastCadence=false, gapRecovery=false;
 };
-class ScheduleMiss : public std::runtime_error { public: using std::runtime_error::runtime_error; };
+class ScheduleMiss : public std::runtime_error {
+public:
+    explicit ScheduleMiss(const std::string& message,bool restart=false):std::runtime_error(message),restartRequired(restart){}
+    bool restartRequired;
+};
 class InvalidTiming : public std::invalid_argument { public: using std::invalid_argument::invalid_argument; };
 // Run the device's own configuration checks before touching a live session.
 bool validConfig(Config config);

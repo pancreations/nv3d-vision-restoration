@@ -1,0 +1,5 @@
+#include <windows.h>
+#include "@CMAKE_SOURCE_DIR@/src/resources.h"
+
+IDI_APP_ICON ICON "@CMAKE_SOURCE_DIR@/assets/3dlogo.ico"
+IDR_APP_LOGO RCDATA "@CMAKE_SOURCE_DIR@/assets/3dlogo.png"

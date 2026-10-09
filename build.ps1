@@ -6,7 +6,14 @@ if($LASTEXITCODE -ne 0){throw 'CMake configuration failed'}
 $targets=@('VisionRestoration','vision_stereo_setup','vision_tests','vision_compatibility_tests','vision_lcd_tests','vision_controls_tests','vision_menu_tests','vision_panel_tests','vision_platform_tests','vision_depth_tests','vision_screen_tests','vision_screen_bench','vision_overlay_probe','vision_firmware','VisionGameHook','vision_rp2040_tests','vision_rp2040_host_tests','vision_rp2040_probe')
 # The AI screen depth helper needs ONNX Runtime and DirectML from tools/Get-Dependencies.ps1.
 $targets+='vision_vlc_tests'
+$targets+='vision_depth_stability_tests'
+$targets+='vision_wibble_source_probe'
+$targets+='vision_wibble_source_tests'
 $targets+='vision_output_window_tests'
+$targets+='vision_steamvr_handoff_tests'
+$targets+='vision_gpu_capture_tests'
+$targets+='vision_gpu_capture_bench'
+$targets+='vision_direct_capture_bench'
 $targets+='vision_stream_view_tests'
 $targets+='vision_present_probe'
 $targets+='vision_direct_eyes_tests'

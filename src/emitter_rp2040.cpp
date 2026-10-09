@@ -10,6 +10,7 @@
 namespace vision {
 void Emitter::runRp2040(std::stop_token stopToken,UsbDeviceInfo info) {
     DWORD task=0;HANDLE mmcss=AvSetMmThreadCharacteristicsW(L"Pro Audio",&task);
+    if(mmcss)AvSetMmThreadPriority(mmcss,AVRT_PRIORITY_CRITICAL);
     std::unique_ptr<rp2040::Link> link;std::unique_ptr<rp2040::Client> client;
     try {
         link=rp2040::openUsb(info.bus,info.address);client=std::make_unique<rp2040::Client>(*link,rp2040::hostMicroseconds);
@@ -84,11 +85,15 @@ void Emitter::runRp2040(std::stop_token stopToken,UsbDeviceInfo info) {
                 bool right=command->eye==Eye::Right;right^=phase.flipEye;
                 try{client->schedule(right?rp2040::Eye::Right:rp2040::Eye::Left,target,stopToken);}
                 catch(const rp2040::ScheduleMiss& miss){
-                    client->stop(stopToken);suspend();
-                    std::lock_guard lock(mutex_);++status_.late;status_.state=EmitterState::Ready;
-                    status_.message=std::string("Timing missed; reacquiring: ")+miss.what();continue;
+                    // A rejected future event did not stop the device. Keep
+                    // accepted opens/closes intact; the next boundary recovers
+                    // without sending the glasses an idle/reset burst.
+                    if(miss.restartRequired){client->stop(stopToken);suspend();}
+                    std::lock_guard lock(mutex_);++status_.late;
+                    if(miss.restartRequired)status_.state=EmitterState::Ready;
+                    status_.message=std::string(miss.restartRequired?"Timing missed; reacquiring: ":"Skipped late/conflicting shutter event: ")+miss.what();continue;
                 }
-                std::lock_guard lock(mutex_);++status_.commands;status_.lastTransferUs=(qpc()-before)*1e6;
+                std::lock_guard lock(mutex_);status_.message="Shutter timing active";++status_.commands;status_.lastTransferUs=(qpc()-before)*1e6;
                 status_.maxTransferUs=std::max(status_.maxTransferUs,status_.lastTransferUs);status_.state=EmitterState::Running;
             }
             if(qpc()-lastClock>.005) {client->sampleClock(stopToken);lastClock=qpc();}

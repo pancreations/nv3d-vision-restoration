@@ -128,7 +128,7 @@ void StereoSource::runVlc(std::stop_token stop,const SourceConfig& config,ID3D11
                 revision=pictures.revision;updated=true;
             }
         }
-        if(updated)publish(texture.Get(),width,height,qpc(),Encoding::SRGB,0,0);
+        if(updated)publish(texture.Get(),width,height,qpc(),Encoding::SRGB,0,0,false);
         if(qpc()-lastStatus>.1){
             lastStatus=qpc();const int state=media_player_get_state(player);
             const auto time=media_player_get_time(player),length=media_player_get_length(player);

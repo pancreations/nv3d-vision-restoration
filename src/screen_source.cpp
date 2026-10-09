@@ -1,3 +1,4 @@
+#include "gpu_capture.h"
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Whole-screen conversion (the SpaceWalker / Reality Hub idea): a display is captured, a depth
 // network estimates every pixel's depth, and both eyes are resampled from the picture with that
@@ -104,7 +105,7 @@ void ScreenStereoRenderer::render(ID3D11DeviceContext* context,ID3D11ShaderResou
     ID3D11ShaderResourceView* views[2]{picture,nearness};auto* cb=params_.Get();auto* sm=sampler_.Get();
     context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs_.Get(),nullptr,0);context->PSSetShader(ps_.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,&cb);context->PSSetShaderResources(0,2,views);context->PSSetSamplers(0,1,&sm);
     for(int eye=0;eye<2;eye++){
-        const float p[12]{eye==0?-1.f:1.f,s.depth?s.separation:0.f,s.convergence,s.popOut, nearness?1.f:0.f,s.showDepth&&nearness?1.f:0.f,float(s.steps),0, 1.f/float(eyeWidth),1.f/float(height),0,0};
+        const float p[12]{eye==0?-1.f:1.f,s.depth?s.separation:0.f,s.convergence,s.popOut, nearness?1.f:0.f,s.showDepth&&nearness?(s.mapEnabled?2.f:1.f):0.f,float(s.steps),0, 1.f/float(eyeWidth),1.f/float(height),0,0};
         constants(context,p);D3D11_VIEWPORT vp{float(eye*eyeWidth),0,float(eyeWidth),float(height),0,1};context->RSSetViewports(1,&vp);context->Draw(3,0);
     }
     ID3D11ShaderResourceView* none[2]{};context->PSSetShaderResources(0,2,none);
@@ -116,23 +117,11 @@ void ScreenStereoRenderer::downscale(ID3D11DeviceContext* context,ID3D11ShaderRe
     ID3D11ShaderResourceView* none=nullptr;context->PSSetShaderResources(0,1,&none);
 }
 void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUID adapterId,ID3D11Device* device,ID3D11DeviceContext* context,const Publish& publish){
-    namespace cap=winrt::Windows::Graphics::Capture;namespace dx=winrt::Windows::Graphics::DirectX;namespace meta=winrt::Windows::Foundation::Metadata;
-    if(!cap::GraphicsCaptureSession::IsSupported())throw std::runtime_error("Windows Graphics Capture is unavailable.");
     if(!config.monitor)throw std::runtime_error("No display selected for the screen conversion.");
-    auto interop=winrt::get_activation_factory<cap::GraphicsCaptureItem,IGraphicsCaptureItemInterop>();cap::GraphicsCaptureItem item{nullptr};
-    check(interop->CreateForMonitor(config.monitor,winrt::guid_of<cap::GraphicsCaptureItem>(),winrt::put_abi(item)),"Capture the selected display");
-    ComPtr<IDXGIDevice> dxDevice;check(device->QueryInterface(IID_PPV_ARGS(&dxDevice)),"Capture DXGI device");winrt::com_ptr<IInspectable> inspectable;check(CreateDirect3D11DeviceFromDXGIDevice(dxDevice.Get(),inspectable.put()),"Capture WinRT device");
-    auto rtDevice=inspectable.as<dx::Direct3D11::IDirect3DDevice>();auto size=item.Size();
-    const auto format=config.captureHDR?dx::DirectXPixelFormat::R16G16B16A16Float:dx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
-    // Windows 11 outlines a captured display in yellow unless borderless capture is granted (automatic for an unpackaged app).
-    try{if(meta::ApiInformation::IsTypePresent(L"Windows.Graphics.Capture.GraphicsCaptureAccess"))cap::GraphicsCaptureAccess::RequestAccessAsync(cap::GraphicsCaptureAccessKind::Borderless).get();}catch(...){}
-    auto frames=cap::Direct3D11CaptureFramePool::CreateFreeThreaded(rtDevice,format,2,size);auto session=frames.CreateCaptureSession(item);
-    // The cursor stays out of the picture: Windows draws it above the overlay, at screen depth, with no delay.
-    session.IsCursorCaptureEnabled(false);
-    try{if(meta::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession",L"IsBorderRequired"))session.IsBorderRequired(false);}catch(...){}
-    session.StartCapture();
+    GpuCapture capture(device,config);
+    Encoding pictureEncoding=Encoding::LinearScRGB;
     ScreenStereoRenderer renderer;renderer.init(device);
-    DepthService service;DepthNormalizer normalizer;
+    DepthService service;DepthNormalizer normalizer;DepthMapProcessor mapProcessor;
     struct Textures{ComPtr<ID3D11Texture2D> picture,netInput,netStaging,nearMap,sbs;ComPtr<ID3D11ShaderResourceView> pictureView,nearView;ComPtr<ID3D11RenderTargetView> netTarget,sbsTarget;unsigned width=0,height=0,netW=0,netH=0;DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;} t;
     auto ensurePicture=[&](unsigned w,unsigned h,DXGI_FORMAT f){
         if(t.picture&&t.width==w&&t.height==h&&t.format==f)return;
@@ -152,27 +141,29 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
         check(device->CreateTexture2D(&n,nullptr,&t.nearMap),"Nearness map");check(device->CreateShaderResourceView(t.nearMap.Get(),nullptr,&t.nearView),"Nearness view");
         t.netW=w;t.netH=h;
     };
-    std::vector<float> rawDepth,nearness;bool haveDepth=false,dirty=false,netDirty=false,stagingPending=false,serviceStarted=false;unsigned serviceQuality=0;std::string serviceModel;
-    uint64_t settingsRevision=0,depthFrames=0,rateFrames=0;double nextRender=0,lastTimestamp=0,stagingTimestamp=0,depthTimestamp=0,inferenceMs=0,convertMs=0,lastStatus=0,nextSubmit=0,rateStart=qpc(),depthFps=0;
+    std::vector<float> rawDepth,nearness,adjusted;DepthMapSettings appliedMap;bool appliedMapEnabled=false;
+    bool haveDepth=false,dirty=false,netDirty=false,stagingPending=false,serviceStarted=false;unsigned serviceQuality=0;std::string serviceModel;
+    uint64_t settingsRevision=0,depthFrames=0,rateFrames=0;double nextRender=0,lastTimestamp=0,stagingTimestamp=0,depthTimestamp=0,previousDepthTimestamp=0,inferenceMs=0,convertMs=0,lastStatus=0,nextSubmit=0,rateStart=qpc(),depthFps=0;
     while(!stop.stop_requested()){
         ScreenSettings s;uint64_t revision;{std::lock_guard l(mutex_);s=screen_;revision=screenRevision_;}
         if(revision!=settingsRevision){settingsRevision=revision;dirty=true;nextRender=nextSubmit=0;normalizer.smoothing=s.smoothing;}
         bool newPicture=false;
-        if(auto frame=frames.TryGetNextFrame()){
-            // Drain to the most recent picture; a frame arrives for every change of the desktop.
-            while(auto newer=frames.TryGetNextFrame()){frame.Close();frame=newer;}
-            auto content=frame.ContentSize();
-            if(content.Width!=size.Width||content.Height!=size.Height){frame.Close();if(content.Width>0&&content.Height>0){size=content;frames.Recreate(rtDevice,format,2,size);}continue;}
-            auto access=frame.Surface().as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();ComPtr<ID3D11Texture2D> texture;check(access->GetInterface(IID_PPV_ARGS(&texture)),"Capture texture");
-            D3D11_TEXTURE2D_DESC cd{};texture->GetDesc(&cd);ensurePicture(cd.Width,cd.Height,cd.Format);
-            context->CopySubresourceRegion(t.picture.Get(),0,0,0,0,texture.Get(),0,nullptr);
-            lastTimestamp=double(frame.SystemRelativeTime().count())/1e7;frame.Close();newPicture=true;dirty=true;netDirty=true;
+        CapturedPicture picture;
+        const bool ready=capture.next(picture);
+        {std::lock_guard l(mutex_);status_.captureBackend=capture.backend();}
+        if(ready){
+            captureAcquiredAt_=picture.acquiredAt;
+            D3D11_TEXTURE2D_DESC cd{};picture.texture->GetDesc(&cd);ensurePicture(picture.width,picture.height,cd.Format);
+            D3D11_BOX box{picture.left,picture.top,0,picture.left+picture.width,picture.top+picture.height,1};
+            context->CopySubresourceRegion(t.picture.Get(),0,0,0,0,picture.texture.Get(),0,&box);
+            pictureEncoding=picture.encoding;
+            lastTimestamp=picture.timestamp;capture.release();newPicture=true;dirty=true;netDirty=true;
         }
         if(!t.picture){shortWait();continue;}
         // The helper starts once the picture size is known and restarts when the quality or the model changes.
         if(s.depth&&(!serviceStarted||serviceQuality!=s.quality||serviceModel!=s.model)){
             service.stop();serviceStarted=true;serviceQuality=s.quality;serviceModel=s.model;normalizer.reset();haveDepth=false;stagingPending=false;netDirty=true;
-            inferenceMs=depthTimestamp=nextSubmit=depthFps=0;rateStart=qpc();rateFrames=depthFrames;
+            inferenceMs=depthTimestamp=previousDepthTimestamp=nextSubmit=depthFps=0;rateStart=qpc();rateFrames=depthFrames;
             service.start(config.depthHelper,s.model.empty()?config.depthModel:std::filesystem::path(wide(s.model)),adapterId,t.width,t.height,std::clamp(s.quality,depth::patch,depth::maxSide),config.depthLog);
         }
         if(serviceStarted&&service.ready()){
@@ -184,7 +175,7 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
             const double interval=std::max(s.depthRate>0?1/s.depthRate:0.,inferenceMs*2/1000);
             if(netDirty&&!stagingPending&&service.pictureFree()&&qpc()>=nextSubmit){
                 context->GenerateMips(t.pictureView.Get());
-                renderer.downscale(context,t.pictureView.Get(),t.netTarget.Get(),n.width,n.height,std::max(std::log2(float(t.width)/float(n.width)),0.f),config.captureHDR,config.sdrWhiteLevel);
+                renderer.downscale(context,t.pictureView.Get(),t.netTarget.Get(),n.width,n.height,std::max(std::log2(float(t.width)/float(n.width)),0.f),pictureEncoding==Encoding::LinearScRGB,config.sdrWhiteLevel);
                 context->CopyResource(t.netStaging.Get(),t.netInput.Get());context->Flush();stagingPending=true;stagingTimestamp=lastTimestamp;netDirty=false;
                 // Preserve the requested cadence instead of accumulating each late wake.
                 const double submitted=qpc();nextSubmit+=interval;if(nextSubmit<=submitted)nextSubmit=submitted+interval;
@@ -194,18 +185,36 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
                 if(SUCCEEDED(h)){service.submit(static_cast<const uint8_t*>(m.pData),m.RowPitch,n.width,n.height,stagingTimestamp);context->Unmap(t.netStaging.Get(),0);stagingPending=false;}
                 else if(h!=DXGI_ERROR_WAS_STILL_DRAWING)check(h,"Read back the network picture");
             }
-            // A new depth map: normalise, smooth, upload.
-            if(service.take(rawDepth,depthTimestamp,inferenceMs)&&rawDepth.size()==size_t(n.width)*n.height&&normalizer.process(rawDepth.data(),n.width,n.height,nearness)){
+            // Keep normalized history independent of the user's map edits.
+            bool mapDirty=false;
+            if(service.take(rawDepth,depthTimestamp,inferenceMs)&&rawDepth.size()==size_t(n.width)*n.height){
+                const float elapsed=previousDepthTimestamp>0?float(depthTimestamp-previousDepthTimestamp):1.f/30;
+                if(normalizer.process(rawDepth.data(),n.width,n.height,nearness,elapsed)){
+                    previousDepthTimestamp=depthTimestamp;haveDepth=true;depthFrames++;mapDirty=true;
+                }
+            }
+            // Also reprocess cached depth on a static desktop: sliders do not need new inference.
+            if(haveDepth&&(mapDirty||s.map!=appliedMap||s.mapEnabled!=appliedMapEnabled)){
+                if(s.mapEnabled)mapProcessor.process(nearness,n.width,n.height,s.map,adjusted);
+                const auto& upload=s.mapEnabled?adjusted:nearness;
+                appliedMap=s.map;appliedMapEnabled=s.mapEnabled;
                 D3D11_MAPPED_SUBRESOURCE m{};check(context->Map(t.nearMap.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&m),"Upload the nearness map");
-                for(unsigned y=0;y<n.height;y++)memcpy(static_cast<uint8_t*>(m.pData)+size_t(y)*m.RowPitch,nearness.data()+size_t(y)*n.width,size_t(n.width)*sizeof(float));
-                context->Unmap(t.nearMap.Get(),0);haveDepth=true;depthFrames++;dirty=true;
+                for(unsigned y=0;y<n.height;y++)memcpy(static_cast<uint8_t*>(m.pData)+size_t(y)*m.RowPitch,upload.data()+size_t(y)*n.width,size_t(n.width)*sizeof(float));
+                context->Unmap(t.nearMap.Get(),0);dirty=true;
             }
         }
         // Both eyes are drawn when the picture, the depth or the settings changed, at most pairRate times a second.
         const double now=qpc();
         if(dirty&&now>=nextRender){
-            renderer.render(context,t.pictureView.Get(),haveDepth&&s.depth?t.nearView.Get():nullptr,t.sbsTarget.Get(),t.width,t.height,s);
-            publish(t.sbs.Get(),t.width*2,t.height,lastTimestamp?lastTimestamp:now,config.captureHDR?Encoding::LinearScRGB:Encoding::SRGB,0,0);
+            const bool needsDepth=haveDepth&&s.depth;
+            if(needsDepth){
+                renderer.render(context,t.pictureView.Get(),t.nearView.Get(),t.sbsTarget.Get(),t.width,t.height,s);
+                publish(t.sbs.Get(),t.width*2,t.height,lastTimestamp?lastTimestamp:now,pictureEncoding,0,0,false);
+            }else{
+                // Duplicate the captured texels straight into the shared eyes. No intermediate SBS copy.
+                context->OMSetRenderTargets(0,nullptr,nullptr);
+                publish(t.picture.Get(),t.width,t.height,lastTimestamp?lastTimestamp:now,pictureEncoding,0,0,true);
+            }
             convertMs=(qpc()-now)*1000;dirty=false;
             // Keep a steady cadence: adding the interval to the actual wake time
             // accumulated timer/capture delays and reduced a 60 fps target to 58.
@@ -229,6 +238,6 @@ void StereoSource::runScreen(std::stop_token stop,const SourceConfig& config,LUI
         // only every second tick then rendered, which held the conversion at 32 pairs a second.
         if(!newPicture)shortWait(service.depthEvent());
     }
-    session.Close();frames.Close();service.stop();
+    capture.release();service.stop();
 }
 }

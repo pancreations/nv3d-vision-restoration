@@ -20,8 +20,8 @@ body = markdown.markdown((root / 'README.md').read_text(encoding='utf-8-sig'),
                          extensions=['tables', 'fenced_code', 'sane_lists'])
 base = f'https://github.com/pancreations/nv3d-vision-restoration/blob/v{version}/'
 body = re.sub(r'href="(?!https?://|#|mailto:)([^"]+)"', lambda m: 'href="' + base + m[1] + '"', body)
-style = '''@page {size: Letter; margin: .65in} body {font: 10pt/1.4 "Segoe UI",sans-serif;color:#172016}
-h1 {font-size:24pt} h2 {font-size:17pt;border-bottom:1pt solid #76b900;margin-top:20pt}
+style = '''@page {size: Letter; margin: .65in} body {font: 10pt/1.35 "Segoe UI",sans-serif;color:#172016}
+h1 {font-size:24pt} h2 {font-size:17pt;border-bottom:1pt solid #76b900;margin-top:18pt}
 h3 {font-size:12pt} h1,h2,h3 {break-after:avoid} p,li {orphans:3;widows:3}
 table {border-collapse:collapse;width:100%;font-size:9pt} th,td {border:1px solid #ccd4c5;padding:5pt;text-align:left}
 tr {break-inside:avoid} thead {display:table-header-group} pre {white-space:pre-wrap;background:#eef3e7;padding:8pt}

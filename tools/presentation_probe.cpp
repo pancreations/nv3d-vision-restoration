@@ -9,7 +9,7 @@ using namespace vision;
 // Measures real fullscreen scanout under application load without alternating
 // eyes, black insertion, changes to the display mode, or input/focus takeover.
 int wmain(int argc,wchar_t** argv){
-    if(argc<5){std::cerr<<"usage: vision_present_probe PID queue-depth seconds report.csv [stream] [simulate]\n";return 2;}
+    if(argc<5){std::cerr<<"usage: vision_present_probe PID queue-depth seconds report.csv [stream] [simulate] [--display index]\n";return 2;}
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const HRESULT co=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     HWND output=nullptr,mirror=nullptr;
@@ -18,6 +18,13 @@ int wmain(int argc,wchar_t** argv){
         const unsigned depth=wcstoul(argv[2],nullptr,10);
         const double seconds=std::clamp(_wtof(argv[3]),1.,90.);
         const std::filesystem::path report=argv[4];
+        bool streamEnabled=false,simulate=false;int outputDisplay=-1;
+        for(int i=5;i<argc;++i){const std::wstring option=argv[i];
+            if(option==L"stream")streamEnabled=true;
+            else if(option==L"simulate")simulate=true;
+            else if(option==L"--display"&&i+1<argc)outputDisplay=_wtoi(argv[++i]);
+            else throw std::runtime_error("Unknown diagnostic option");
+        }
         HWND captured=nullptr;int64_t largest=0;
         for(const auto& item:captureWindows(nullptr)){
             DWORD pid=0;GetWindowThreadProcessId(item.first,&pid);RECT rect{};
@@ -29,6 +36,7 @@ int wmain(int argc,wchar_t** argv){
         if(!captured)throw std::runtime_error("Capture PID has no drawable window");
         auto displays=enumerateDisplays();const auto monitor=MonitorFromWindow(captured,MONITOR_DEFAULTTONEAREST);
         auto selected=std::find_if(displays.begin(),displays.end(),[&](const Display& d){return d.monitor==monitor;});
+        if(outputDisplay>=0){if(outputDisplay>=int(displays.size()))throw std::runtime_error("Output display index out of range");selected=displays.begin()+outputDisplay;}
         if(selected==displays.end())throw std::runtime_error("Capture display not found");
         const auto d=*selected;
         Settings settings;settings.width=int(d.width);settings.height=int(d.height);settings.refresh=d.refresh;
@@ -43,7 +51,7 @@ int wmain(int argc,wchar_t** argv){
         constexpr DWORD ex=WS_EX_TOPMOST|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED|WS_EX_TOOLWINDOW;
         auto make=[&]{HWND w=CreateWindowExW(ex,wc.lpszClassName,L"Steady presentation diagnostic",WS_POPUP,d.rect.left,d.rect.top,d.width,d.height,nullptr,nullptr,wc.hInstance,nullptr);if(!w||!configureOutputOverlay(w))throw std::runtime_error("Create steady diagnostic overlay");return w;};
         output=make();SetWindowDisplayAffinity(output,WDA_EXCLUDEFROMCAPTURE);
-        if(argc>5){mirror=make();SetWindowPos(mirror,output,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);}
+        if(streamEnabled){mirror=make();SetWindowPos(mirror,output,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);}
         StereoSource source;SourceConfig config;config.kind=SourceKind::Window;config.window=captured;
         config.captureHDR=d.hdrEnabled;config.sdrWhiteLevel=d.sdrWhiteNits/80;
         source.start(config,d.adapterLuid);
@@ -52,7 +60,6 @@ int wmain(int argc,wchar_t** argv){
         if(!source.latest())throw std::runtime_error("No captured image: "+source.status().message);
         Emitter disconnected;Presenter presenter(source,disconnected);
         Presenter::Diagnostics options;options.steadyTimingProbe=true;options.queueDepth=depth;options.trace=report;
-        const bool simulate=argc>6&&std::wstring(argv[6])==L"simulate";
         if(simulate){
             disconnected.configure(settings);disconnected.connect({}, {},true);
             const double until=qpc()+2;while(disconnected.status().state!=EmitterState::Simulated&&qpc()<until)Sleep(2);

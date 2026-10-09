@@ -96,7 +96,7 @@
   </div>
 </header>
 
-<div class="wrap status"><p><strong>v0.3.0 experimental prerelease:</strong> <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.3.0">Download the portable ZIP and updated README PDF</a>.</p><p>Adds Half SBS and Full SBS for VLC movies, stereo images and window capture with correct eye proportions, a movable and resizable windowed 3D preview, and capture from a different monitor than the output. Includes the existing timing, stream-view and BFI improvements. Resident Evil 2 and Metal Gear Solid V still have unresolved failures and are not supported games. Classic NVIDIA stereo rendering is not supplied by this app.</p></div>
+<div class="wrap status"><p><strong>Alpha 0.3.5 &mdash; first regular GitHub release:</strong> <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.3.5">Download the portable ZIP and setup PDFs</a>.</p><p>Adds experimental Wibble Wobble / SteamVR eye input, dedicated VRto3D SBS / TAB capture, independent capture-method choices, AI depth-map controls and stabilization, and emitter recovery improvements. The application remains alpha, with game and optical validation limits. Resident Evil 2 and Metal Gear Solid V still have unresolved failures and are not supported games. See the <a href="RELEASE-v0.3.5.html">release notes</a>.</p></div>
 <section id="status">
   <h2>What works today</h2>
   <h3>3D sources</h3>
@@ -105,8 +105,10 @@
     <table>
       <thead><tr><th>Source</th><th>Status</th></tr></thead>
       <tbody>
-        <tr><td>Window capture of a game rendering side-by-side 3D (proven with Dolphin set to side-by-side)</td><td><span class="pill ok">Working</span></td></tr>
-        <tr><td>Window capture of any side-by-side 3D video</td><td><span class="pill ok">Working</span></td></tr>
+        <tr><td>Windows Graphics Capture of side-by-side 3D (demonstrated with Dolphin)</td><td><span class="pill ok">Previously demonstrated</span></td></tr>
+        <tr><td>DXGI Desktop Duplication game capture</td><td>User reports failure; gameplay validation pending</td></tr>
+        <tr><td><a href="VRTO3D.html">VRto3D SBS / TAB capture</a></td><td><span class="pill">Experimental; real VR gameplay and optical checks pending</span></td></tr>
+        <tr><td><a href="WIBBLE-WOBBLE.html">Wibble Wobble / SteamVR eye input</a></td><td><span class="pill">Experimental; eye-pair timing and VR gameplay unverified</span></td></tr>
         <tr><td><a href="USAGE.html#vlc-stereo-movies">Direct VLC 3.x stereo movie playback (SBS or top/bottom)</a></td><td><span class="pill">SDR decoding tested; optical validation pending</span></td></tr>
         <tr><td>In-game hook</td><td><span class="pill bad">Broken, never worked</span></td></tr>
         <tr><td>Shared Geo11 adapter (x86/x64 DX11)</td><td><span class="pill">Experimental; renderer/transport tests pass, game failures remain</span></td></tr>
@@ -164,7 +166,7 @@
 
 <section id="install">
   <h2>Install and set up the emitter</h2>
-  <p class="intro">Download the <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.3.0">portable release</a>, extract the entire ZIP, and run <code>Start Vision Restoration.cmd</code>. NVIDIA firmware and AI model weights are separate downloads. Building from source is optional.</p>
+  <p class="intro">Download the <a href="https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.3.5">Alpha 0.3.5 portable release</a>, extract the entire ZIP, and run <code>Start Vision Restoration.cmd</code>. NVIDIA firmware and AI model weights are separate downloads. Building from source is optional.</p>
   <ol class="steps">
     <li>
       <h3>Optional: build the app from source</h3>

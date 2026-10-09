@@ -25,7 +25,7 @@ float shift(float n){
 }
 float4 ps(V i):SV_TARGET{
     float2 uv=i.uv;
-    if(mode.y>.5){float g=saturate(nearness(uv)/max(stereo.z,1e-6)*.5);return float4(g,g,g,1);} // mid grey = screen depth
+    if(mode.y>.5){float g=mode.y>1.5?saturate(nearness(uv)):saturate(nearness(uv)/max(stereo.z,1e-6)*.5);return float4(g,g,g,1);} // original preview: mid grey = screen depth
     if(mode.x<.5||stereo.y<=0)return image.SampleLevel(smp,uv,0);
     // This eye shows the source at uv.x - eye * t, where t is the half-parallax of that source.
     // March t from the nearest allowed surface to infinity; the first crossing is the visible one.

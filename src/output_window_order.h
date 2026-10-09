@@ -1,4 +1,5 @@
 #pragma once
+#include "window_occlusion.h"
 #include <windows.h>
 #include <dwmapi.h>
 #include <cstdint>
@@ -39,6 +40,9 @@ public:
         const auto competes=[&](HWND above){
             if(above==output||above==mirror||above==controls||(controls&&GetAncestor(above,GA_ROOTOWNER)==controls)||
                !IsWindowVisible(above)||IsIconic(above))return false;
+            // Ignore only Explorer's inactive task-switching host. Ordinary
+            // DirectComposition windows can contain opaque application pixels.
+            if(isInactiveShellCompositionHost(above))return false;
             DWORD cloaked=0;
             if(SUCCEEDED(DwmGetWindowAttribute(above,DWMWA_CLOAKED,&cloaked,sizeof(cloaked)))&&cloaked)return false;
             RECT rect{},overlap{};

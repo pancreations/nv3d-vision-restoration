@@ -23,8 +23,8 @@ void Surface::create(HWND window,const LUID* luid,bool useHDR,unsigned latency){
     if(luid)check(factory->EnumAdapterByLuid(*luid,IID_PPV_ARGS(&adapter)),"Select display GPU");
     check(D3D11CreateDevice(adapter.Get(),adapter?D3D_DRIVER_TYPE_UNKNOWN:D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"Create D3D11 device");
     hdr=useHDR;
-    // Stereo supplies a refresh-based latency so a higher display rate does not
-    // silently halve the time available to survive GPU/Present stalls.
+    // Stereo scales buffering with refresh so higher rates retain time to
+    // survive GPU/Present stalls, regardless of how the emitter schedules IR.
     makeSwapChain(factory.Get(),window,latency);
 }
 void Surface::attach(ID3D11Device* existing,ID3D11DeviceContext* existingContext,HWND window,unsigned latency){
@@ -37,6 +37,8 @@ void Surface::attach(ID3D11Device* existing,ID3D11DeviceContext* existingContext
 void Surface::makeSwapChain(IDXGIFactory2* factory,HWND window,unsigned latency){
     if(latency<1||latency>maxPresentationQueueDepth)throw std::runtime_error("Presentation queue depth must be between 1 and 8.");
     RECT r{};GetClientRect(window,&r);width=std::max(1L,r.right);height=std::max(1L,r.bottom);
+    // Retain a writable buffer beyond the present queue and the established
+    // four-buffer minimum used by the output and stream surfaces.
     DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=width;desc.Height=height;desc.Format=hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=std::max(4u,latency+1);desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     ComPtr<IDXGISwapChain1> chain;check(factory->CreateSwapChainForHwnd(device.Get(),window,&desc,nullptr,nullptr,&chain),"Create flip swap chain");check(chain.As(&swap),"Waitable swap chain");
     check(swap->SetMaximumFrameLatency(latency),"Set frame latency");waitable=swap->GetFrameLatencyWaitableObject();if(!waitable)throw std::runtime_error("No frame latency wait handle.");
@@ -137,6 +139,7 @@ void Presenter::streamTo(HWND window,bool rightEye){
 RenderStatus Presenter::status()const{std::lock_guard l(mutex_);return status_;}
 void Presenter::run(std::stop_token stop,HWND window,Display display,bool preview,Diagnostics diagnostics){
     DWORD task=0;HANDLE mmcss=AvSetMmThreadCharacteristicsW(L"Games",&task);
+    if(mmcss)AvSetMmThreadPriority(mmcss,AVRT_PRIORITY_HIGH);
     // The output window normally sits unfocused behind the game (the pad follows focus). Windows 11
     // throttles background processes (EcoQoS, ignored timer resolution), which made the presenter and
     // the USB thread miss eye deadlines only while the game had focus. Opt the whole process out.
@@ -150,7 +153,7 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
         // showing zero presents also shows where the output got stuck.
         auto stage=[&](const char* what){std::lock_guard l(mutex_);status_.message=what;};
         stage("Creating the output surface");
-        const unsigned queueDepth=diagnostics.queueDepth?diagnostics.queueDepth:preview?3:presentationQueueDepth(display.refresh);
+        const unsigned queueDepth=diagnostics.queueDepth?diagnostics.queueDepth:preview?3:presentationQueueDepth(display.refresh,emitter_.status().scheduled);
         Settings s;{std::lock_guard l(mutex_);s=settings_;}Surface surface;surface.create(window,&display.adapterLuid,s.hdr,queueDepth);stage("Creating the output shaders");DrawState draw;draw.init(surface.device.Get());stage("Waiting for the first frame slot");
         {ComPtr<IDXGIDevice> dxgi;if(SUCCEEDED(surface.device.As(&dxgi)))dxgi->SetGPUThreadPriority(7);}
         struct PresentRecord {UINT id;uint64_t expected;Slot slot;bool muted;};std::deque<PresentRecord> records;
@@ -183,7 +186,7 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             // Anchor the eye sequence to the display refresh counter once statistics are available.
             // Feedback below corrects future submissions when a prediction slips.
             uint64_t slotSeq=slotIndex;
-            if(!preview&&lastObserved){UINT previous=0;if(SUCCEEDED(surface.swap->GetLastPresentCount(&previous)))slotSeq=refreshForPresent(previous+1,lastObserved,lastRefresh);}
+            if(!preview&&lastObserved){UINT previous=0;if(SUCCEEDED(surface.swap->GetLastPresentCount(&previous)))slotSeq=clock.futureRefresh(refreshForPresent(previous+1,lastObserved,lastRefresh),qpc());}
             auto slot=sequenceSlot(s.sequence,slotSeq,false);
             auto emitterStatus=emitter_.status();auto usbState=emitterStatus.state;
             auto resync=[&]{emitter_.suspend();blank=16;slotIndex=0;clock.reset();anchor.reset();records.clear();lastObserved=lastRefresh=0;local.resyncs++;local.lastResyncSec=qpc()-begin;local.timingPassed=false;};
@@ -192,7 +195,9 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             // user selects pause, stop or 2D; never demote running stereo here.
             auto slip=[&](unsigned count){
                 local.misses+=count;slipWindow+=count;
-                if(s.lcd.enabled&&emitterStatus.scheduled)resync();
+                lockedSince=qpc();local.timingPassed=false;
+                // The device schedules explicit future boundaries. A missed slot
+                // must not turn into sixteen black frames and a shutter shutdown.
             };
             if(!preview&&emitterStatus.late>lastUsbLate)slip(unsigned(emitterStatus.late-lastUsbLate));
             lastUsbLate=emitterStatus.late;
@@ -205,7 +210,25 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             const double sourceBegin=qpc();
             if(slot.pairBoundary&&!mute){auto next=source_.forPresentation();if(draw.accept(surface.device.Get(),next))source_.presented(next);pairTime=qpc()-begin;}
             const double sourceEnd=qpc();
+            // Opening a new shared texture/view can stall the driver after the
+            // initial prediction. Re-select BOTH pixels and shutter deadline
+            // before drawing; never submit the old black/eye slot after a stall.
+            auto retarget=[&](double now){
+                if(preview||!lastObserved||mute)return false;
+                const uint64_t readyRefresh=clock.futureRefresh(slotSeq,now);
+                if(readyRefresh!=slotSeq){
+                    slip(unsigned(std::min<uint64_t>(readyRefresh-slotSeq,UINT_MAX)));
+                    slotSeq=readyRefresh;slot=sequenceSlot(s.sequence,slotSeq,false);
+                    eye=steady?streamViewEye(s,false):slot.eye;
+                    return true;
+                }
+                return false;
+            };
+            retarget(sourceEnd);
             surface.bind();draw.draw(surface.context.Get(),surface.width,surface.height,steady?steadyViewSettings(s):s,eye,preview&&!paused,pattern,pairTime,overlay&&!mute&&!steady,!mute&&!steady&&slot.eye==Eye::Black,slotIndex);
+            // Mapping constants/submitting the draw can also stall the driver.
+            // Replace expired pixels before Present, keeping the acquired pair.
+            if(retarget(qpc()))draw.draw(surface.context.Get(),surface.width,surface.height,steady?steadyViewSettings(s):s,eye,preview&&!paused,pattern,pairTime,overlay&&!mute&&!steady,!mute&&!steady&&slot.eye==Eye::Black,slotIndex);
             const double drawEnd=qpc();
             // Predictive trigger for every backend: the eye command is timed from the predicted
             // vblank of the refresh this present will land on, not from retrospective statistics.
@@ -215,8 +238,7 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             if(!preview&&(!steady||simulatedProbe)&&!mute&&slot.trigger&&lastObserved&&clock.samples>=8&&blank==0) {
                 // Predict the next present's refresh before Present can block.
                 // Actual refresh statistics below still detect a missed prediction.
-                UINT previous=0;check(surface.swap->GetLastPresentCount(&previous),"Predict present identifier");
-                const uint64_t nextRefresh=refreshForPresent(previous+1,lastObserved,lastRefresh);
+                const uint64_t nextRefresh=slotSeq;
                 // Submit on the predicted vblank. Both supported emitters apply phase on-device:
                 // NVIDIA through its X delay timer and RP2040 through its scheduled open time.
                 const double target=clock.predict(nextRefresh);
@@ -226,7 +248,6 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
                     // A stale/past target or an unconfirmed counter restart is
                     // not a usable deadline. Leave the firmware's cadence alone.
                     slip(1);
-                    if(s.lcd.enabled&&emitterStatus.scheduled){mute=true;eye=Eye::Black;draw.draw(surface.context.Get(),surface.width,surface.height,s,eye,false,pattern,pairTime,false,false,slotIndex);}
                 } else {
                     Eye commandEye=slot.eye;if(s.swapEyes)commandEye=commandEye==Eye::Left?Eye::Right:Eye::Left;
                     emitter_.submit(commandEye,target,clock.period*1e6);
@@ -244,7 +265,7 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             local.occluded=h==DXGI_STATUS_OCCLUDED;
             if(!local.occluded)check(h,"Present stereo output");
             check(surface.swap->GetLastPresentCount(&id),"Present identifier");
-            uint64_t expected=lastObserved?refreshForPresent(id,lastObserved,lastRefresh):0;
+            uint64_t expected=lastObserved?slotSeq:0;
             records.push_back({id,expected,mute?Slot{Eye::Black,false,false}:slot,mute});while(records.size()>64)records.pop_front();lastSubmitted=id;(void)lastSubmitted;
             DXGI_FRAME_STATISTICS stats{};HRESULT sh=surface.swap->GetFrameStatistics(&stats);
             if(SUCCEEDED(sh)){
@@ -676,6 +697,59 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
     draw.release();report<<"Presenter: separate texture-array eyes, SBS/TB eye boundaries, signed convergence and black margins PASS; hook: SBS/TB PASS\n";
     report<<"2D stream: all pixels retain one eye through repeated L/B/R/B cycles, both eye selections and eye swap, SBS/TAB/arrays PASS\n";
     report<<"Explicit timing diagnostic: fixed eye at every refresh; SBS/TAB/arrays PASS\n";
+    // Uniform eye colors cannot detect a vertical wrap. Use a monotonic red
+    // ramp, distinct top/bottom blue markers and a different green eye code.
+    // The aspect matches the live 3840x2126 client fitted to a 3840x2160 display;
+    // smaller textures keep this offscreen geometry check inexpensive.
+    {
+        constexpr unsigned inputWidth=16,inputHeight=128,outWidth=384,outHeight=216;
+        constexpr float eyeAspect=3840.f/2126.f;
+        std::vector<float> pixels(size_t(inputWidth)*inputHeight*4);
+        for(unsigned y=0;y<inputHeight;++y)for(unsigned x=0;x<inputWidth;++x){
+            auto* pixel=pixels.data()+(size_t(y)*inputWidth+x)*4;
+            pixel[0]=(float(y)+.5f)/inputHeight;
+            pixel[1]=x<inputWidth/2?.25f:.75f;
+            pixel[2]=y<inputHeight/8?.875f:y>=inputHeight*7/8?.125f:.5f;pixel[3]=1;
+        }
+        D3D11_TEXTURE2D_DESC desc{};desc.Width=inputWidth;desc.Height=inputHeight;
+        desc.MipLevels=desc.ArraySize=desc.SampleDesc.Count=1;desc.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA data{pixels.data(),inputWidth*4*sizeof(float),0};ComPtr<ID3D11Texture2D> input;
+        check(device->CreateTexture2D(&desc,&data,&input),"Vertical capture marker input");
+        draw.release();check(device->CreateShaderResourceView(input.Get(),nullptr,&draw.view),"Vertical capture marker view");
+        draw.active=std::make_shared<StereoFrame>();draw.active->packing=Packing::SideBySide;draw.active->encoding=Encoding::LinearScRGB;
+        draw.active->width=inputWidth;draw.active->height=inputHeight;draw.active->eyeAspect=eyeAspect;
+        desc.Width=outWidth;desc.Height=outHeight;desc.BindFlags=D3D11_BIND_RENDER_TARGET;
+        ComPtr<ID3D11Texture2D> target,read;check(device->CreateTexture2D(&desc,nullptr,&target),"Vertical capture marker target");
+        ComPtr<ID3D11RenderTargetView> targetView;check(device->CreateRenderTargetView(target.Get(),nullptr,&targetView),"Vertical capture marker RTV");
+        desc.BindFlags=0;desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        check(device->CreateTexture2D(&desc,nullptr,&read),"Vertical capture marker readback");
+        auto* view=targetView.Get();context->OMSetRenderTargets(1,&view,nullptr);D3D11_VIEWPORT viewport{0,0,float(outWidth),float(outHeight),0,1};context->RSSetViewports(1,&viewport);
+        for(bool preview:{false,true})for(Eye eye:{Eye::Left,Eye::Right}){
+            Settings settings;settings.hdr=true;draw.draw(context.Get(),outWidth,outHeight,settings,eye,preview,3,0);
+            context->CopyResource(read.Get(),target.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
+            check(context->Map(read.Get(),0,D3D11_MAP_READ,0,&mapped),"Read vertical capture markers");
+            bool correct=true;const unsigned paneWidth=preview?outWidth/2:outWidth;
+            const float fittedHeight=paneWidth/eyeAspect,top=(outHeight-fittedHeight)*.5f;
+            for(unsigned pane=0;pane<(preview?2u:1u);++pane){
+                float previous=-1;
+                for(unsigned y=0;y<outHeight;++y){
+                    const auto* row=reinterpret_cast<const float*>(static_cast<const uint8_t*>(mapped.pData)+size_t(y)*mapped.RowPitch);
+                    const auto* pixel=row+(pane*paneWidth+paneWidth/2)*4;
+                    const float sourceY=(float(y)+.5f-top)/fittedHeight;
+                    if(sourceY<0||sourceY>1){correct&=pixel[0]==0&&pixel[1]==0&&pixel[2]==0;continue;}
+                    const float expected=std::clamp(sourceY,.5f/inputHeight,1-.5f/inputHeight);
+                    correct&=std::abs(pixel[0]-expected)<.003f&&pixel[0]>=previous;
+                    correct&=std::abs(pixel[1]-((preview?pane:unsigned(eye))==0?.25f:.75f))<.003f;
+                    if(sourceY<.06f)correct&=pixel[2]>.85f;
+                    if(sourceY>.94f)correct&=pixel[2]<.15f;
+                    previous=pixel[0];
+                }
+            }
+            context->Unmap(read.Get(),0);
+            if(!correct)throw std::runtime_error("Captured SBS vertical rows wrapped, reversed, crossed eyes or escaped the fitted image.");
+        }
+        draw.release();report<<"Capture geometry: monotonic vertical rows, distinct top/bottom markers and both eyes; 3840x2126 aspect to 16:9, HDR full-eye and inspection panes PASS\n";
+    }
     // Capture must preserve scRGB values in HDR. SDR uses the captured display's
     // white level, not a curve that lifts shadows or darkens every white.
     for(bool hdr:{false,true})for(float white:{1.f,2.5f,4.f}){

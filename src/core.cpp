@@ -9,12 +9,20 @@
 #include <windows.h>
 
 namespace vision {
-unsigned presentationQueueDepth(double refresh){
+unsigned presentationQueueDepth(double refresh,bool scheduledEmitter){
     if(!std::isfinite(refresh)||refresh<=0)throw std::runtime_error("Invalid presentation refresh rate.");
+    // Both emitters need the same display buffering: scheduling IR on-device
+    // does not prevent GPU/Present stalls. Keep about 25 ms at higher refresh
+    // rates; the 240 Hz production diagnostic required six queued frames.
+    (void)scheduledEmitter;
     return unsigned(std::clamp(std::ceil(refresh*.025),3.,double(maxPresentationQueueDepth)));
 }
 uint64_t refreshForPresent(uint32_t present,uint32_t observedPresent,uint64_t observedRefresh) {
     return observedRefresh+uint32_t(present-observedPresent);
+}
+bool emitterCadenceDiscontinuous(Eye previousEye,double previousDeadline,Eye eye,double deadline,double periodSeconds){
+    if(previousEye==Eye::Black||previousDeadline==0)return false;
+    return eye==previousEye||std::abs(deadline-previousDeadline-periodSeconds)>periodSeconds*.5;
 }
 void PresentRefreshAnchor::observe(uint32_t id,uint64_t displayedRefresh,bool composed){
     if(valid&&id==present)return;
@@ -342,10 +350,19 @@ void validate(const Settings& s) {
     if(!std::isfinite(s.imageGain) || s.imageGain < 1 || s.imageGain > 8) throw std::runtime_error("Image brightness must be between 1x and 8x.");
     if(!std::isfinite(s.rightOffsetUs) || std::abs(s.rightOffsetUs) > 2000) throw std::runtime_error("Right eye offset must stay within 2000 us.");
     if(!std::isfinite(s.bandHeight) || s.bandHeight < .1f || s.bandHeight > 1) throw std::runtime_error("Stereo area height must be between 10% and 100% of the output.");
+    if(s.captureMethod!=CaptureMethod::DesktopDuplication&&s.captureMethod!=CaptureMethod::WindowsGraphicsCapture)throw std::runtime_error("Invalid capture method.");
+    if(s.windowCaptureMethod!=CaptureMethod::DesktopDuplication&&s.windowCaptureMethod!=CaptureMethod::WindowsGraphicsCapture)throw std::runtime_error("Invalid window capture method.");
     if(!std::isfinite(s.screen.separation) || s.screen.separation < 0 || s.screen.separation > .1f) throw std::runtime_error("Screen depth strength must be between 0 and 10% of the width.");
     if(!std::isfinite(s.screen.convergence) || s.screen.convergence < .01f || s.screen.convergence > 1) throw std::runtime_error("Screen plane must be between 0.01 and 1.");
     if(!std::isfinite(s.screen.popOut) || s.screen.popOut < 0 || s.screen.popOut > 2) throw std::runtime_error("Screen pop-out limit must be between 0 and 2.");
     if(!std::isfinite(s.screen.smoothing) || s.screen.smoothing < 0 || s.screen.smoothing > .99f) throw std::runtime_error("Screen depth smoothing must be between 0 and 0.99.");
+    const auto& map=s.screen.map;
+    if(!std::isfinite(map.farPoint)||!std::isfinite(map.nearPoint)||map.farPoint<0||map.nearPoint>1||map.nearPoint-map.farPoint<.00999f)
+        throw std::runtime_error("Depth map far/near points must be within 0 to 1, with at least 0.01 between them.");
+    if(!std::isfinite(map.contrast)||map.contrast<.25f||map.contrast>4||!std::isfinite(map.gamma)||map.gamma<.25f||map.gamma>4)
+        throw std::runtime_error("Depth map contrast and gamma must be between 0.25 and 4.");
+    if(!std::isfinite(map.detail)||map.detail<0||map.detail>2||map.detailRadius<1||map.detailRadius>8)
+        throw std::runtime_error("Depth map detail must be between 0 and 2, with a radius of 1 to 8 pixels.");
     if(s.screen.quality < 14 || s.screen.quality > 1036) throw std::runtime_error("Screen network input must be between 14 and 1036 pixels.");
     if(s.screen.steps < 4 || s.screen.steps > 64) throw std::runtime_error("Screen search steps must be between 4 and 64.");
     if(!std::isfinite(s.screen.depthRate) || s.screen.depthRate < 5 || s.screen.depthRate > 60) throw std::runtime_error("Screen depth update limit must be between 5 and 60 per second.");
@@ -402,7 +419,7 @@ void saveProfile(const std::filesystem::path& path, const Settings& s) {
     if(path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
     auto temp = path; temp += L".tmp";
     std::ofstream f(temp); if(!f) throw std::runtime_error("Cannot write profile.");
-    f << std::setprecision(17) << (s.lcd.enabled?"version 12\n":"version 11\n");
+    f << std::setprecision(17) << (s.screen.map!=DepthMapSettings{}?"version 13\n":s.lcd.enabled?"version 12\n":"version 11\n");
     auto str=[&](const char* k,const std::string& v){ f << k << ' ' << std::quoted(v) << '\n'; };
     str("name",s.name);str("display",s.displayId);str("connection",s.connection);str("assessment",s.assessment);str("notes",s.monitorNotes);
     str("emitter",s.emitterId);str("emitter_firmware",s.emitterFirmware);
@@ -420,7 +437,13 @@ void saveProfile(const std::filesystem::path& path, const Settings& s) {
          <<"\nlcd_scan_compensate "<<t.compensateScanout<<"\nlcd_scan_us "<<t.scanoutUs<<"\nlcd_reference_position "<<t.referencePosition<<"\nlcd_target "<<t.target<<'\n';
     }
     f << "screen_separation " << s.screen.separation << "\nscreen_convergence " << s.screen.convergence << "\nscreen_popout " << s.screen.popOut << "\nscreen_smoothing " << s.screen.smoothing << "\nscreen_quality " << s.screen.quality << "\nscreen_steps " << s.screen.steps << '\n';
+    f << "capture_method " << int(s.captureMethod) << '\n';
+    f << "window_capture_method " << int(s.windowCaptureMethod) << '\n';
     str("screen_model",s.screen.model);
+    if(s.screen.map!=DepthMapSettings{})f << "screen_map_far " << s.screen.map.farPoint << "\nscreen_map_near " << s.screen.map.nearPoint
+      << "\nscreen_map_contrast " << s.screen.map.contrast << "\nscreen_map_gamma " << s.screen.map.gamma
+      << "\nscreen_map_detail " << s.screen.map.detail << "\nscreen_map_radius " << s.screen.map.detailRadius
+      << "\nscreen_map_invert " << s.screen.map.invert << '\n';
     f << "screen_depth_rate " << s.screen.depthRate << '\n';
     f.close(); if(!f) throw std::runtime_error("Profile write failed.");
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
@@ -430,7 +453,7 @@ Settings loadProfile(const std::filesystem::path& path) {
     std::ifstream f(path); if(!f) throw std::runtime_error("Cannot open profile.");
     Settings s; std::string key; bool version=false; unsigned fields=0; int fileVersion=0;
     while(f >> key) {
-        if(key=="version") { int v=0; f>>v; if(v<1||v>12)throw std::runtime_error("Unsupported profile version."); version=true; fileVersion=v; }
+        if(key=="version") { int v=0; f>>v; if(v<1||v>13)throw std::runtime_error("Unsupported profile version."); version=true; fileVersion=v; }
         else if(key=="name") f>>std::quoted(s.name);
         else if(key=="display") f>>std::quoted(s.displayId);
         else if(key=="connection") f>>std::quoted(s.connection);
@@ -488,7 +511,16 @@ Settings loadProfile(const std::filesystem::path& path) {
         else if(key=="screen_smoothing") f>>s.screen.smoothing;
         else if(key=="screen_quality") f>>s.screen.quality;
         else if(key=="screen_steps") f>>s.screen.steps;
+        else if(key=="capture_method"){int method=0;f>>method;if(method<0||method>1)throw std::runtime_error("Invalid capture method.");s.captureMethod=CaptureMethod(method);}
+        else if(key=="window_capture_method"){int method=0;f>>method;if(method<0||method>1)throw std::runtime_error("Invalid window capture method.");s.windowCaptureMethod=CaptureMethod(method);}
         else if(key=="screen_model") f>>std::quoted(s.screen.model);
+        else if(key=="screen_map_far") f>>s.screen.map.farPoint;
+        else if(key=="screen_map_near") f>>s.screen.map.nearPoint;
+        else if(key=="screen_map_contrast") f>>s.screen.map.contrast;
+        else if(key=="screen_map_gamma") f>>s.screen.map.gamma;
+        else if(key=="screen_map_detail") f>>s.screen.map.detail;
+        else if(key=="screen_map_radius") f>>s.screen.map.detailRadius;
+        else if(key=="screen_map_invert") f>>s.screen.map.invert;
         else if(key=="screen_depth_rate") f>>s.screen.depthRate;
         else throw std::runtime_error("Unknown profile field: "+key);
         if(!f)throw std::runtime_error("Malformed profile field: "+key);
@@ -561,4 +593,11 @@ bool TimingTracker::observeContinuous(uint64_t n,double t) {
     *this=std::move(candidate);return true;
 }
 double TimingTracker::predict(uint64_t n)const{return epoch+(double(n)-double(lastRefresh))*period;}
+uint64_t TimingTracker::futureRefresh(uint64_t predicted,double now)const{
+    if(samples<8||period<=0||!std::isfinite(now)||predict(predicted)>now)return predicted;
+    // A stalled producer cannot display a queued prediction in the past.
+    // Choose the next physical refresh before deciding both image and IR eye.
+    const double steps=std::floor((now-predict(predicted))/period)+1;
+    return predicted+uint64_t(steps);
+}
 }

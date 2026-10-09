@@ -16,7 +16,7 @@ const char* resultName(Result r) {
     case Result::TooFar:return "event beyond scheduling horizon";case Result::NotReady:return "device not ready";
     case Result::StaleSequence:return "duplicate event";case Result::WrongEye:return "eye sequence mismatch";
     case Result::Overlap:return "shutter intervals overlap";case Result::Timeout:return "host timeout";
-    case Result::Late:return "late device executor";default:return "protocol error";
+    case Result::Late:return "late device executor";case Result::QueueFull:return "device event queue full";default:return "protocol error";
     }
 }
 Client::Client(Link& link,std::function<double()> now,bool allowSimulation):link_(link),now_(std::move(now)),allowSimulation_(allowSimulation){}
@@ -35,6 +35,7 @@ Message Client::transact(Opcode op,std::span<const uint8_t> payload,std::stop_to
     status_.extendedCadence=(reply.payload[2]&extendedCadenceFlag)!=0;
     status_.aperture=(reply.payload[2]&apertureFlag)!=0;
     status_.fastCadence=(reply.payload[2]&fastCadenceFlag)!=0;
+    status_.gapRecovery=(reply.payload[2]&gapRecoveryFlag)!=0;
     if(op!=Opcode::Diagnostics) {
         const auto boot=get64(std::span(reply.payload).subspan(24));
         if(!boot)throw std::runtime_error("RP2040 boot identity missing");
@@ -42,7 +43,7 @@ Message Client::transact(Opcode op,std::span<const uint8_t> payload,std::stop_to
         status_.bootId=boot;
     }
     const auto result=Result(reply.payload[0]);
-    if(op==Opcode::Schedule&&(result==Result::TooSoon||result==Result::BadConfig||result==Result::WrongEye||result==Result::Overlap||result==Result::NotReady||result==Result::BadSession))throw ScheduleMiss(std::string("RP2040 Schedule: ")+resultName(result));
+    if(op==Opcode::Schedule&&(result==Result::TooSoon||result==Result::TooFar||result==Result::QueueFull||result==Result::BadConfig||result==Result::WrongEye||result==Result::Overlap||result==Result::NotReady||result==Result::BadSession))throw ScheduleMiss(std::string("RP2040 Schedule: ")+resultName(result),result==Result::NotReady||result==Result::BadSession||(!status_.gapRecovery&&(result==Result::BadConfig||result==Result::WrongEye)));
     // A deadline/watchdog fault has already stopped the device. Stop remains
     // idempotent only if Status confirms that no session is active.
     if(op==Opcode::Stop&&result==Result::BadSession){inspect(stopToken);if(!status_.session)return reply;}

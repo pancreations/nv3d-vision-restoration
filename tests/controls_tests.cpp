@@ -11,12 +11,13 @@ int main(){try{
     ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize={800,700};io.DeltaTime=1.f/60;
     unsigned char* pixels;int width,height;io.Fonts->GetTexDataAsRGBA32(&pixels,&width,&height);
     Settings s;s.phaseUs=4000;s.leftUs=s.rightUs=1500;s.sequence=Sequence::Repeated;
-    bool fine=false,hdrAvailable=true,aiDesktop=false;ImVec2 timingOrigin{},imageOrigin{};
+    bool fine=false,hdrAvailable=true,aiDesktop=false,mapOnly=false,mapChanged=false;ImVec2 timingOrigin{},imageOrigin{},mapOrigin{};
     auto frame=[&]{
         ImGui::NewFrame();ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize({700,650});
         ImGui::Begin("Controls",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
-        timingOrigin=ImGui::GetCursorScreenPos();drawTimingControls(s,0,33332,3000,fine);
-        imageOrigin=ImGui::GetCursorScreenPos();drawImageControls(s,hdrAvailable,aiDesktop);
+        if(mapOnly){mapOrigin=ImGui::GetCursorScreenPos();mapChanged|=drawDepthMapControls(s.screen);}
+        else{timingOrigin=ImGui::GetCursorScreenPos();drawTimingControls(s,0,33332,3000,fine);
+        imageOrigin=ImGui::GetCursorScreenPos();drawImageControls(s,hdrAvailable,aiDesktop);}
         ImGui::End();ImGui::Render();
     };
     auto click=[&](float x,float y){io.AddMousePosEvent(x,y);frame();io.AddMouseButtonEvent(0,true);frame();io.AddMouseButtonEvent(0,false);frame();};
@@ -49,6 +50,15 @@ int main(){try{
     imageSlider(3);imageSlider(4);
     require(s.screen.separation!=oldStrength&&s.screen.convergence!=oldPlane,"AI controls must edit the actual generated depth and screen plane");
     require(s.depth==sceneDepth&&s.convergence==alignment,"AI controls must not edit shape depth or add a second alignment");
+    mapOnly=true;frame();frame();const auto screen=s.screen;
+    click(mapOrigin.x+5,mapOrigin.y+row+half);
+    require(s.screen.mapEnabled,"Map adjustments must be enabled before editing their sliders");
+    for(int index=0;index<6;index++)click(480,mapOrigin.y+row*(index+3)+half);
+    require(mapChanged&&s.screen.map.farPoint>0&&s.screen.map.nearPoint<1&&s.screen.map.nearPoint>s.screen.map.farPoint,"Level sliders edit an ordered far/near range");
+    require(s.screen.map.contrast!=1&&s.screen.map.gamma!=1&&s.screen.map.detail>0&&s.screen.map.detailRadius!=2,"Map contrast, gamma and detail controls edit the settings");
+    click(mapOrigin.x+5,mapOrigin.y+row*10+half);click(mapOrigin.x+5,mapOrigin.y+row*11+half);
+    require(s.screen.map.invert&&s.screen.showDepth,"Invert and preview controls work");
+    require(s.screen.separation==screen.separation&&s.screen.convergence==screen.convergence&&s.screen.quality==screen.quality&&s.lcd==lcd,"Map edits preserve stereo geometry, quality and emitter timing");
     ImGui::DestroyContext();std::cout<<"PASS: live timing/image controls, independent LCD edits, and AI depth/plane controls target the correct settings.\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}

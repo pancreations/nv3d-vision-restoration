@@ -1,5 +1,6 @@
 #pragma once
 #include "lcd_timing.h"
+#include "screen_depth.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -65,6 +66,8 @@ struct ScreenSettings {
     float convergence=.85f;  // nearness at zero parallax: 1 puts the nearest content on the screen, less brings it out
     float popOut=.5f;        // how far in front of the screen, as a fraction of the separation
     float smoothing=.5f;     // temporal smoothing of the depth, 0 (none) to 0.95
+    DepthMapSettings map;
+    bool mapEnabled=false;   // opt-in session state; original normalized depth is the default
     unsigned quality=518;    // longest side of the network input, in pixels
     unsigned steps=24;       // reprojection search steps per pixel
     std::string model;       // depth model file (UTF-8 path); empty = the Depth Anything V2 Small in models/
@@ -73,7 +76,10 @@ struct ScreenSettings {
     bool depth=true;         // false: both eyes get the picture unchanged (session state)
     bool showDepth=false;    // diagnostic: the nearness map instead of the picture (session state)
 };
+enum class CaptureMethod { DesktopDuplication, WindowsGraphicsCapture };
 struct Settings {
+    CaptureMethod captureMethod=CaptureMethod::DesktopDuplication; // whole-screen AI conversion
+    CaptureMethod windowCaptureMethod=CaptureMethod::WindowsGraphicsCapture; // isolated game/window capture
     std::string name = "New calibration";
     std::string displayId;
     std::string connection;
@@ -153,9 +159,9 @@ Slot sequenceSlot(Sequence sequence, uint64_t index, bool swap);
 uint64_t refreshForPresent(uint32_t present, uint32_t observedPresent, uint64_t observedRefresh);
 inline constexpr unsigned maxPresentationQueueDepth=8;
 inline constexpr unsigned emitterCommandQueueCapacity=maxPresentationQueueDepth+2;
-// Reserve about 25 ms of completed frames at the actual display refresh rate.
-// A fixed three-frame queue shrinks to only 12.5 ms at 240 Hz.
-unsigned presentationQueueDepth(double refresh);
+// Reserve about 25 ms of display buffering, independently of emitter scheduling.
+unsigned presentationQueueDepth(double refresh,bool scheduledEmitter=false);
+bool emitterCadenceDiscontinuous(Eye previousEye,double previousDeadline,Eye eye,double deadline,double periodSeconds);
 // Follow the actual displayed refresh on every new present. Composition does
 // not change the meaning of PresentRefreshCount or justify filtering slips.
 struct PresentRefreshAnchor {
@@ -271,6 +277,7 @@ struct TimingTracker {
     bool observeContinuous(uint64_t refresh, double qpcSeconds);
     uint64_t rejectedSamples = 0, corrections = 0;
     double predict(uint64_t refresh) const;
+    uint64_t futureRefresh(uint64_t predictedRefresh,double now) const;
     void reset();
 private:
     static constexpr unsigned window = 240;
