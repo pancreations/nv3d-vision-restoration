@@ -51,7 +51,6 @@ You can also record or stream a normal 2D picture while you play in 3D, using th
 | Whole desktop in 3D (AI depth) | 🧪 Needs a free model download (see below) |
 | VRto3D and Wibble Wobble (SteamVR) | 🧪 |
 | Geo11 DirectX 11 game fixes | 🧪 Some games still crash (Resident Evil 2, Metal Gear Solid V) |
-| HDR output | 🧪 Off by default. Some OLEDs buzz audibly at high HDR brightness. |
 | Games that relied on NVIDIA's own 3D Vision driver, DirectX 9/10/12, Vulkan | ❌ Not supported |
 
 Windows 10 or 11 (64-bit) is required.
