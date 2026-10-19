@@ -59,7 +59,7 @@ int main(){
             auto* originalDevice=surface.device.Get();auto* originalSwap=surface.swap.Get();
             for(bool hdr:{true,false,true,false}){
                 surface.setHdr(hdr);DXGI_SWAP_CHAIN_DESC1 desc{};check(surface.swap->GetDesc1(&desc),"Read output format");
-                require(surface.hdr==hdr&&desc.Format==(hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM),"HDR toggle must change output precision");
+                require(surface.hdr==hdr&&surface.pq==hdr&&desc.Format==(hdr?DXGI_FORMAT_R10G10B10A2_UNORM:DXGI_FORMAT_R8G8B8A8_UNORM),"HDR toggle must switch between HDR10 and SDR output");
                 require(surface.device.Get()==originalDevice&&surface.swap.Get()==originalSwap&&IsWindow(window),"HDR toggle replaced the output");
                 surface.bind();float pixel[]{4,2,.5f,1};surface.context->ClearRenderTargetView(surface.target.Get(),pixel);
             }
@@ -117,7 +117,7 @@ int main(){
         require(intact,"Retained pair pixels changed after source restart");
         {
             const auto& area=displays.front().rect;
-            HWND window=CreateWindowExW(0,L"STATIC",L"SBS capture test",WS_POPUP,area.left+40,area.top+40,128,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+            HWND window=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"STATIC",L"SBS capture test",WS_POPUP,area.left+40,area.top+40,128,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
             require(window!=nullptr,"SBS capture window creation");
             struct WindowCleanup {HWND handle;~WindowCleanup(){DestroyWindow(handle);}} cleanup{window};
             ShowWindow(window,SW_SHOWNOACTIVATE);UpdateWindow(window);
@@ -125,7 +125,7 @@ int main(){
             fixtureSurface.bind();float color[]{1,0,0,1};
             fixtureSurface.context->ClearRenderTargetView(fixtureSurface.target.Get(),color);
             check(fixtureSurface.swap->Present(1,0),"Present SBS capture fixture");
-            // Let the compositor publish the visible surface before WGC opens it.
+            // Keep the fixture unobscured and let the compositor publish it before capture.
             const double visibleAt=qpc()+.2;
             while(qpc()<visibleAt){MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(10);}
             SourceConfig capture;capture.kind=SourceKind::Window;capture.window=window;
@@ -136,7 +136,7 @@ int main(){
                     MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(10);
                 }
                 auto captured=source.latest();const auto captureStatus=source.status();source.stop();
-                if(!captured)throw std::runtime_error("SBS capture failed: "+captureStatus.message);
+                if(!captured)throw std::runtime_error("SBS capture failed: "+captureStatus.message+"; "+captureStatus.captureBackend);
                 std::cout<<"SBS captured client: "<<captured->width<<'x'<<captured->height<<'\n';
                 require(captured&&captured->width==128&&captured->height==64,"SBS window capture lost client dimensions");
                 require(captured->packing==Packing::SideBySide&&captured->eyeAspect==(format==SbsFormat::Half?2.f:1.f),"Window capture lost Half/Full SBS aspect");

@@ -54,7 +54,7 @@ function Test-OuterManifest([string]$ManifestPath, [string]$ArchivePath) {
 }
 
 function Test-NoMachinePaths($Archive) {
-    foreach ($entry in $Archive.Entries | Where-Object { $_.Name -and [IO.Path]::GetExtension($_.Name) -in @('.txt', '.ini', '.cmd', '.bat', '.ps1', '.html', '.json') }) {
+    foreach ($entry in $Archive.Entries | Where-Object { $_.Name -and [IO.Path]::GetExtension($_.Name) -in @('.txt', '.md', '.ini', '.cmd', '.bat', '.ps1', '.html', '.json') }) {
         $reader = [IO.StreamReader]::new($entry.Open(), [Text.Encoding]::UTF8, $true)
         try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
         if ($content -match '(?i)[A-Z]:\\Users\\[^\\]+' -or $content -match [Regex]::Escape($projectRoot)) {
@@ -68,12 +68,16 @@ try {
     $publicNames = Get-EntryNames $public
     if (-not ($public.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq 'models/' })) { throw 'Public archive is missing the included empty models folder.' }
     foreach ($name in @(
-        'VisionRestoration.exe', 'VisionDepth.exe', 'onnxruntime.dll', 'DirectML.dll',
+        'VisionRestoration.exe', 'VisionDepth.exe', 'onnxruntime.dll', 'DirectML.dll', 'openvr_api.dll',
         'runtime/x86/VisionStereo11.dll', 'runtime/x86/VisionStereoLoader.dll',
         'runtime/x64/VisionStereo11.dll', 'runtime/x64/VisionStereoLoader.dll',
         'vision_firmware.exe', 'vision_rp2040_probe.exe', 'Release Notes.md', 'Prepare NVIDIA Firmware.cmd', 'Prepare NVIDIA Firmware.ps1',
         'tools/7zip/7za.exe', 'licenses/7zip/7z2603-src.7z',
         'firmware/VisionEmitter.uf2', 'Vision Restoration Quick Start.pdf', 'Vision Restoration README.pdf', 'README.md', 'Launch.cmd',
+        'Start Vision Restoration.cmd', 'Launch-VRto3D.cmd', 'Launch-WibbleWobble.cmd',
+        'docs/USAGE.md', 'docs/VRTO3D.md', 'docs/WIBBLE-WOBBLE.md', 'docs/RP2040.md',
+        'docs/EMITTER.md', 'docs/TIMING-CALIBRATION.md', "docs/RELEASE-v$version.md",
+        'LICENSE', 'THIRD_PARTY_NOTICES.md', 'licenses/OpenVR-BSD-3-Clause.txt',
         'runtime/x64/VisionStereoCapture.addon64', 'runtime/x86/VisionStereoCapture.addon32',
         'runtime/x64/ReShade.dll', 'runtime/x86/ReShade.dll'
     )) { Assert-Has $publicNames $name }

@@ -12,6 +12,7 @@ public:
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGISwapChain2> swap;ComPtr<ID3D11RenderTargetView> target;HANDLE waitable=nullptr;
     unsigned width=0,height=0;bool hdr=false;
+    bool pq=false; // HDR presents as 10-bit PQ/Rec.2020 (HDR10)
     ~Surface();
     void create(HWND window,const LUID* adapter,bool useHDR,unsigned latency=3);
     // A second swap chain on an existing device, for the 2D stream view. Sharing the
@@ -22,12 +23,14 @@ public:
     void setHdr(bool useHDR);
     void bind();
 private:
+    void applyColor(bool useHDR);
     void makeSwapChain(IDXGIFactory2* factory,HWND window,unsigned latency);
 };
 struct RenderStatus {
     bool running=false,preview=true,locked=false,timingPassed=false;std::string message="Output stopped";
     uint64_t presents=0,misses=0,resyncs=0,sourcePair=0;double elapsed=0,measuredHz=0,lastResyncSec=-1;
     uint64_t blackOnImage=0,clockReacquires=0;
+    uint64_t queueRefillCorrections=0;
     uint64_t clockOutliers=0,clockCorrections=0,statsDisjoints=0;
     double lastIntervalMs=0,maxIntervalMs=0;std::vector<double> intervals;unsigned leadBins[6]{};bool composed=false;uint64_t modeChanges=0; // trigger lead time ms: <0, 0-2, 2-4, 4-6, 6-8, >8
     // Frame jitter: scatter of the display's vblank timestamps around the fitted refresh clock,
@@ -55,7 +58,10 @@ struct VblankMeasurement {
 VblankMeasurement measureVblank(const Display& display,double seconds);
 class Presenter {
     mutable std::mutex mutex_;std::jthread worker_;Settings settings_;int pattern_=0;
-    RenderStatus status_;uint64_t revision_=0;bool paused_=false,overlay_=false,resyncRequested_=false;
+public:
+    struct MenuState {HANDLE handle=nullptr;uint64_t version=0;RECT rect{};unsigned textureWidth=0,textureHeight=0;};
+private:
+    RenderStatus status_;std::deque<std::string> missEvents_;MenuState menu_;uint64_t revision_=0;bool paused_=false,overlay_=false,resyncRequested_=false;
     HWND streamWindow_=nullptr;bool streamRightEye_=false,streamOpen_=false;std::condition_variable streamIdle_;
     StereoSource& source_;Emitter& emitter_;
 public:
@@ -72,11 +78,19 @@ public:
     void stop();void configure(const Settings& settings,int pattern);void pause(bool paused);
     void resync(); // manual re-lock, requested from the UI or the global hotkey
     void showPhase(bool on); // draw the current phase value in both eye frames (calibration sweep)
+    // Draws the control menu inside the stereo output instead of as a window over it: any window
+    // over the output made Windows rearrange its display planes, which held frames (black frames on
+    // the eye refreshes, a flash every time the menu opened). `shared` is a keyed-mutex texture
+    // (key 0) the UI updates and bumps `version` for; `rect` is the menu's place in output pixels.
+    void showMenu(HANDLE shared,uint64_t version,const RECT& rect,unsigned textureWidth,unsigned textureHeight);
+    void hideMenu();
     // 2D stream view. The presenter draws one eye into this second window because it
     // already holds the open stereo pair: a separate device would contend for the pair's
     // keyed mutex and make the presenter drop the frames it is holding. nullptr stops it.
     void streamTo(HWND window,bool rightEye);
     RenderStatus status()const;
+    // Frame-by-frame evidence for each timing miss since the last call (written to miss-events.log).
+    std::vector<std::string> takeMissEvents();
     void exportReport(const std::filesystem::path& path,const Settings& settings,const std::string& source)const;
 private:
     void run(std::stop_token stop,HWND window,Display display,bool preview,Diagnostics diagnostics);

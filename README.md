@@ -1,204 +1,116 @@
-# NV3D Vision Restoration Project
+# Vision Restoration
 
-An open project, and a proof of concept: NVIDIA 3D Vision glasses and the original 3D Vision USB IR emitter working on a modern monitor and graphics card, without NVIDIA's discontinued 3D Vision driver.
+**Use your NVIDIA 3D Vision glasses again, on a modern PC.**
 
-Vision Restoration talks to the emitter directly and shows frame-sequential 3D itself. Its Geo11 output adapter uses standard Windows display APIs (Direct3D 11 / DXGI), without NVIDIA's discontinued stereo driver. Game tests have used an RTX 5070 Ti; output-only tests also pass on AMD Radeon graphics. Other GPU families still need game tests.
+NVIDIA ended 3D Vision in 2019, and current graphics drivers can't run the glasses. Vision Restoration replaces that driver. It talks to the 3D Vision USB emitter directly, shows 3D frame by frame on a high-refresh monitor, and keeps the glasses in sync. Your graphics driver stays as it is: nothing is patched, downgraded or replaced.
 
-> **Status: personal project, experimental portable release.** Treat every display, game and timing profile as unverified until checked through each lens.
->
-> - **Proven game source:** side-by-side 3D captured from a window into the app, demonstrated with Dolphin on the 240 Hz OLED setup. The user also confirms OLED operation at 120 Hz (2026-09-15).
-> - **Shared Geo11 hook implemented, experimental:** x86/x64 output preserves the existing fix's SBS/TAB/Katanga mode, with game-depth sliders in the app. Prepare game arms automatic connection before launch. Isolated renderer/transport tests pass, but real-game compatibility is unresolved: Resident Evil 2 encountered GPU hangs and Metal Gear Solid V still has an unresolved user-reported startup failure. Neither game is listed as supported.
-> - **VLC movie source implemented:** direct SDR playback of SBS/TAB files using installed 64-bit VLC 3.x; movie viewing through the glasses remains unverified.
-> - **Still incomplete:** broad Helix/3Dmigoto coverage, native NVAPI stereo, DX9/10, native DX12 and other media-player integrations. The earlier depth-based ReShade hook remains nonworking; the separate direct-eye capture add-on is experimental.
-> - **Not working yet:** LCD, QLED and Mini-LED displays show ghosting and crosstalk.
->
-> Window capture and AI desktop remain available. The failed Spout and Blender viewport inputs have been removed.
+> **Alpha software.** It works very well on the setup it was built on (a 240 Hz OLED monitor and an RTX 5070 Ti), and is still being tested elsewhere. The compatibility table below separates what has been confirmed through the glasses from what hasn't.
 
-## What works today
+**[Download the latest release](../../releases/latest)** · [User guide](docs/USAGE.md)
+
+## What you can watch in 3D
+
+- **Any program that already shows side-by-side or top/bottom 3D in a window.** Examples are emulators such as Dolphin and Blender's stereo 3D viewport. The app captures the window and turns it into real 3D for your glasses.
+- **Stereo photos** (side-by-side or top/bottom image files, including `.jps`).
+- **Your whole desktop, converted from 2D** with an AI depth model: videos, 2D games, anything on screen.
+- **VR games on a monitor** through VRto3D or Wibble Wobble.
+- **DirectX 11 games with community 3D fixes** (Geo11), the same fixes 3D Vision players already use.
+
+You can also record or stream a normal 2D picture while you play in 3D, using the *2D stream view* option.
+
+## Compatibility
+
+✅ **Works**: confirmed through the glasses · 🧪 **Experimental**: runs, not yet confirmed or has known issues · ❌ **Not yet**
+
+### Displays
+
+| Display | Status |
+|---|---|
+| OLED at 240 Hz (with black frame insertion) | ✅ Clean, full-screen 3D. The best experience. |
+| OLED at 120 Hz | ✅ Works |
+| OLED at other refresh rates (100, 144 Hz) | 🧪 Untested |
+| LCD, QLED, Mini-LED | ❌ Not yet. These panels change pixels too slowly, so each eye sees a ghost of the other eye's image. |
+
+### Hardware
+
+| Hardware | Status |
+|---|---|
+| 3D Vision and 3D Vision 2 glasses | ✅ |
+| Original NVIDIA 3D Vision USB emitter | ✅ |
+| DIY RP2040 emitter ([guide](docs/RP2040.md)) | ✅ on OLED at 120 and 240 Hz |
+| NVIDIA graphics cards | ✅ Tested on an RTX 5070 Ti; other generations untested |
+| AMD graphics cards | 🧪 Output tests pass; not yet tried with the glasses |
+| Intel graphics | 🧪 Untested |
 
 ### 3D sources
 
 | Source | Status |
 |---|---|
-| Geo11 DX11 output, x86 and x64 | Prepare/automatic connection and depth controls implemented; isolated tests pass, real-game crashes remain unresolved. See [status](docs/STATUS.md). |
-| Window capture of side-by-side 3D output (proven with Dolphin set to side-by-side) | **Working fallback.** |
-| VLC stereo movies (SBS or top/bottom) | Direct VLC 3.x source with audio, pause and seeking; SDR only, optical validation pending. |
-| AI desktop | Available; converts captured 2D content using estimated depth |
-| In-game hook (`VisionGameHook`, `adapters/vision_hook.cpp`) | **Does not work, has never worked** |
-| Native NVAPI stereo / unconverted driver-dependent fixes | Separate rendering backend still required |
-| DirectX 9 / 10, Vulkan | Not started |
+| Window capture of side-by-side / top-bottom 3D (Dolphin, Blender, …) | ✅ Works, including while the GPU is under heavy load |
+| Stereo photos | 🧪 |
+| Whole desktop in 3D (AI depth) | 🧪 Needs a free model download (see below) |
+| VRto3D and Wibble Wobble (SteamVR) | 🧪 |
+| Geo11 DirectX 11 game fixes | 🧪 Some games still crash (Resident Evil 2, Metal Gear Solid V) |
+| HDR output | 🧪 Off by default. Some OLEDs buzz audibly at high HDR brightness. |
+| Games that relied on NVIDIA's own 3D Vision driver, DirectX 9/10/12, Vulkan | ❌ Not supported |
 
-The app can connect an existing Geo11 fix to its glasses output. The fix still renders both eyes and controls shaders, separation and convergence; our adapter transfers those eyes to the app, which presents a frame-sequential overlay over the game window. Window capture accepts existing side-by-side or top/bottom images, and AI desktop remains separate. See the [compatibility architecture](docs/STEREO-COMPATIBILITY.md); passing synthetic tests does not establish game compatibility.
+Windows 10 or 11 (64-bit) is required.
 
-### Displays
+## Getting started
 
-The glasses must admit the intended eye's light while excluding the other eye's light. Panel scanout, pixel transitions, backlight behavior and actual lens timing all affect separation; successful presentation and USB commands alone do not establish it.
+The download also includes a printable **Quick Start** PDF covering these steps.
 
-| Display | Status |
-|---|---|
-| OLED at 240 Hz, with software black frame insertion (SDR and HDR) | **Proven:** clean full-screen 3D through the glasses |
-| OLED at 120 Hz | User-confirmed working, 2026-09-15. Record the sequence and profile with each compatibility test. |
-| OLED at 100 or 144 Hz | Not proven |
-| LCD, QLED, Mini-LED | **Not working yet.** Ghosting and crosstalk remain. Panel response, scanout and synchronization need separate optical checks. |
+1. **Download and extract.** Get `Vision-Restoration-Portable` from [Releases](../../releases/latest), extract the whole ZIP to a normal folder, and run **Start Vision Restoration.cmd**.
+2. **Give the emitter its firmware** (original NVIDIA emitter only). The emitter needs a small firmware file every time it's plugged in. NVIDIA owns it, so it can't be included here. Download NVIDIA's [3D Vision USB controller package](https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe). **Don't install it.** Drag it onto **Prepare NVIDIA Firmware.cmd** instead. The URL says Quadro, but any graphics card works. RP2040 owners skip this step: their firmware is included.
+3. **Connect the emitter.** Plug it straight into the PC (not a hub) and start the app. When it offers to set up the USB driver, accept the administrator prompt. This happens once or twice per PC. If it doesn't work, see [manual driver setup](docs/EMITTER.md).
+4. **Calibrate.** Set your monitor to 240 Hz (or 120 Hz). In the app, click **Match output rate**, turn on **Software black frame insertion**, and click **Start 3D preview**. Close one eye at a time and adjust **Phase** and **Shutter** until each eye sees only its own image. Your settings save automatically.
+5. **Pick something to watch.** Under **Input/Games > Source**, choose **Capture Window** and select the program showing side-by-side 3D (in Dolphin: *Graphics > Stereoscopic 3D Mode > Side-by-Side*). Then press **Fullscreen 3D (F11)**. In fullscreen, **Home** opens the menu.
 
-## Features
+### Optional: whole desktop in 3D
 
-- **Original emitter, no NVIDIA stereo driver:** drives the 3D Vision USB emitter over WinUSB/libusb and uploads its firmware itself. The GPU driver is not replaced, patched or downgraded.
-- **Frame-sequential output** with software black frame insertion (Left / Black / Right / Black), SDR and HDR.
-- **Connect existing Geo11 fixes:** reversible x86/x64 installation, ordinary game launches, original window/input, and app-owned emitter timing. Completed eye pairs stay intact across the entire eye/black cycle.
-- **Optional LCD/QLED experiments with the official emitter:** neutral gray reset, preload/hold sequences, nine-row optical targets and measured phase-range intersection. No LCD success is claimed; the previous subtraction-based "LightBoost" claim is withdrawn. See [panel experiments](docs/PANEL-EXPERIMENTS.md).
-- **Whole screen in 3D with AI depth (new, unverified through the glasses):** the desktop, a video or a 2D game is captured, a depth network estimates every pixel's depth and both eyes are resampled from it, the way SpaceWalker and Reality Hub convert 2D. The result is a click-through overlay, so the desktop stays usable. See [usage](docs/USAGE.md#whole-screen-in-3d-ai-depth).
-- **Live timing controls:** phase, shutter width, phase sweep and eye swap while you look through the glasses.
-- **Calibration aids:** built-in 3D test scene and per-eye test patterns.
-- **2D stream view:** a steady single-eye SDR view for recording or screen sharing, while the glasses continue receiving stereo.
-- **RP2040 DIY emitter:** scheduled USB timing and included firmware; OLED 240 Hz with BFI reconfirmed on 2026-09-26.
-- **Profiles:** timing saved per display and autosaved.
-- **Diagnostics:** vblank jitter, present timing and emitter command timing.
+Download the free [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx) model into the `models` folder, then choose **Ai 3D Desktop** as the source. [Base](https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx) and [Large](https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx) models give finer depth but are slower and for non-commercial use only.
 
-## Requirements
+### Optional: games with Geo11 fixes
 
-- Windows 10 or 11 (64-bit)
-- NVIDIA 3D Vision or 3D Vision 2 glasses
-- NVIDIA 3D Vision USB IR emitter, or the supported RP2040 DIY emitter described in [RP2040 setup](docs/RP2040.md)
-- An OLED monitor with a working 120 Hz or 240 Hz setup (the only display type proven so far)
-- A DX11 game with a working Geo11 fix, or an application that outputs side-by-side/top-bottom 3D for window capture
-- For the original NVIDIA emitter: your own copy of NVIDIA's 3D Vision USB driver package, for its proprietary firmware. The RP2040 uses the included open-source UF2 instead.
+Install the game's community fix from [Helix Mod](https://helixmod.blogspot.com/), [3D Fix Manager](https://helixmod.blogspot.com/2017/05/3d-fix-manager.html) or the [Geo11 releases](https://github.com/ThreeDeeJay/geo-11/releases). In the app, choose **Game Stereo**, pick the game's EXE with **Choose game...**, click **Prepare game**, and launch the game in windowed or borderless mode. See the [user guide](docs/USAGE.md#games-with-geo11-fixes) for details.
 
-## Installing
+## If something goes wrong
 
-### 1. Download the portable release
+- **Flashing or lost sync:** press **Re-lock sync**, or **Ctrl+Alt+R** in fullscreen. If it keeps happening, open an issue and attach `reports/session.log` and `reports/miss-events.log`.
+- **Each eye sees a bit of the other image:** adjust **Phase** first, then **Shutter**. On an LCD this is the panel limit described above.
+- **Recording or screen sharing shows a jumping, flashing picture:** that's the 3D signal. Tick **2D stream view** and share that instead.
 
-Download `Vision-Restoration-Portable-v0.3.0.zip` from [GitHub Releases](https://github.com/pancreations/nv3d-vision-restoration/releases/tag/v0.3.0), extract the entire archive to a writable folder, and run `Start Vision Restoration.cmd`. The ZIP includes the complete application, AI helper and redistributable AI runtime, emitter utilities, x86/x64 game integration, and required runtime files. It never includes NVIDIA's proprietary emitter firmware, AI model weights, Geo11, or a game-specific fix.
+More help: [User guide](docs/USAGE.md) · [Emitter setup and troubleshooting](docs/EMITTER.md) · [RP2040 DIY emitter](docs/RP2040.md) · [VRto3D](docs/VRTO3D.md) · [Wibble Wobble](docs/WIBBLE-WOBBLE.md)
 
-**New in v0.3.0:** explicit **Half SBS** and **Full SBS** for VLC movies, stereo images and window capture, with correct eye proportions and black bars where needed. Adds a movable, resizable **Windowed preview** with F11 fullscreen switching, and permits a captured window on a different monitor from the stereo output. See the [release notes](docs/RELEASE-v0.3.0.md). Gameplay under sustained load and optical performance still need validation.
+## What's new in 0.3.6
 
-Whole-screen AI depth needs a model file placed in the included empty `models\` folder. Download [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx) for the fastest option. [Base](https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx) and [Large](https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx) are slower and licensed for non-commercial use. Save each model with a distinct filename. Normal stereo images, window capture, game integration and emitter operation do not need a model.
+- **No more flashing under heavy GPU load.** Rendering in Blender's Cycles viewport, or any other GPU-heavy program, used to make the glasses flash black. The output now gets top GPU priority from Windows and stays in sync.
+- More reliable emitter recovery when the display timing shifts.
+- The fullscreen menu is drawn inside the 3D picture, so opening it no longer causes flashes.
+- The black level slider can now darken shadows as well as lift them.
+- HDR is off by default and marked experimental.
 
-The release ZIP includes **Vision Restoration README.pdf** generated from this README, **README.md**, and **Vision Restoration Quick Start.pdf**. Both PDFs are also available beside the ZIP on the release page. This is an experimental prerelease, not a stable game-compatibility release.
+Full details are in the [release notes](docs/RELEASE-v0.3.6.md).
 
-### Downloads not included in the public ZIP
+## Building from source
 
-| Item | Official source | Why it is needed |
-|---|---|---|
-| NVIDIA emitter firmware source | [Direct download: NVIDIA standalone 3D Vision USB controller package 390.41](https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe) | Run `Prepare NVIDIA Firmware.cmd` and select the downloaded EXE. The helper opens it as an archive; it does not run NVIDIA's installer. |
-| WinUSB fallback | [Zadig](https://zadig.akeo.ie/) | Only needed if the included automatic WinUSB setup fails. |
-| Generic Geo11 binaries | [Maintained Geo11 releases](https://github.com/ThreeDeeJay/geo-11/releases) | Supplies stereo rendering for compatible DX11 fixes. |
-| Game-specific fixes | [Helix Mod](https://helixmod.blogspot.com/) or [3D Fix Manager](https://helixmod.blogspot.com/2017/05/3d-fix-manager.html) | Supplies per-game shader and compatibility fixes. |
-| Fast AI depth model | [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small/blob/main/onnx/model_fp16.onnx) | Optional whole-screen AI depth. |
-| Larger AI depth models | [Base](https://huggingface.co/onnx-community/depth-anything-v2-base/blob/main/onnx/model_fp16.onnx) · [Large](https://huggingface.co/onnx-community/depth-anything-v2-large/blob/main/onnx/model_fp16.onnx) | Optional slower models; non-commercial license. |
-
-### Build from source
-
-Building requires Visual Studio 2022 with Desktop development for C++, the Windows SDK and CMake 3.24+. Third-party build inputs are downloaded from their official sources:
+You need Visual Studio 2022 (Desktop development with C++), the Windows SDK and CMake 3.24 or newer.
 
 ```powershell
-git clone https://github.com/pancreations/nv3d-vision-restoration.git
+git clone <this repository's URL>
 cd nv3d-vision-restoration
-.\tools\Get-Dependencies.ps1   # downloads build dependencies and the AI depth model
-.\build.ps1
+.\tools\Get-Dependencies.ps1   # downloads third-party libraries from their official sources
+.\build.ps1                    # builds and runs the tests
 ```
 
-The app is built to `build\bin\Release\VisionRestoration.exe`.
-
-### 2. Get the emitter firmware
-
-**RP2040 owners:** skip the NVIDIA firmware steps and follow [RP2040 setup](docs/RP2040.md). At 240 Hz, use **Black frame insertion** for the confirmed Left / Black / Right / Black setup; ordinary Left / Right at 240 Hz is a different cadence. `vision_rp2040_probe.exe --clock` checks USB timing with the app closed.
-
-The emitter has no permanent firmware: the PC uploads it every time the emitter is plugged in. That firmware lives inside NVIDIA's own driver file, `nvstusb.sys`.
-
-1. Download NVIDIA's official [standalone 3D Vision USB controller package 390.41 directly](https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe). This bypasses NVIDIA's legacy download-page button. The server path says Quadro, but this USB-only package supplies the same emitter firmware; Vision Restoration does not require a Quadro GPU or legacy graphics driver.
-2. **Do not run NVIDIA's installer.** In the portable release, run `Prepare NVIDIA Firmware.cmd` and select the downloaded `3dvisioncontrollerdriver.exe`, or drag that EXE onto the helper. It includes a portable extractor, so no separate 7-Zip installation is needed. It writes `emitter.fw` beside the app and preserves any existing firmware.
-3. An already extracted `nvstusb*.sys` also works. Source builders can extract the SYS from `NV3DVisionUSB.Driver` using [7-Zip](https://www.7-zip.org/) and run the low-level extractor directly:
-
-   ```powershell
-   .\build\bin\Release\vision_firmware.exe C:\path\to\nvstusb.sys .\build\bin\Release\emitter.fw
-   ```
-
-### 3. Give the emitter the WinUSB driver
-
-The emitter appears to Windows as two different USB devices, one before its firmware is loaded and one after. The first number (`0955`, NVIDIA) stays the same; the second number changes:
-
-| Emitter state | USB ID | Driver |
-|---|---|---|
-| Just plugged in, no firmware yet | `0955` **`7003`** | Install WinUSB once |
-| Firmware running (after the app uploads it) | `0955` **`0007`** | Install WinUSB once |
-
-Each needs WinUSB one time per PC. After that, plugging the emitter in again only needs the app to re-upload the firmware, which it does by itself.
-
-1. Plug the emitter straight into a USB port on the PC (no hub). With no driver, Device Manager lists it as **NVIDIA stereo controller** with a warning.
-2. Run [Zadig](https://zadig.akeo.ie/), choose **Options > List All Devices**, select the NVIDIA device with USB ID `0955 7003`, pick **WinUSB** as the target driver and click **Install Driver**.
-3. Start the app (step 4). It uploads the firmware and the emitter restarts with the **other** ID, `0955 0007`. If the app then reports that it cannot open the emitter, run Zadig again, select `0955 0007`, install **WinUSB**, and press **Refresh USB** in the app.
-
-Only these two emitter IDs get WinUSB. Don't install NVIDIA's 3D Vision driver or change your GPU driver.
-
-### 4. Run and calibrate
-
-1. Select a supported high-refresh mode and run `Start Vision Restoration.cmd` from the portable release (`Launch.cmd` in a source checkout).
-2. Pick your display and refresh rate, click **Match output rate**, then **Start 3D preview**. The glasses start shuttering.
-3. Turn on **Software black frame insertion** and use **Maximize brightness**.
-4. Adjust **Phase** and **Shutter** until each eye sees only its own image.
-
-### 5. Show a game in 3D
-
-1. Install the game's established Geo11-compatible fix, following its instructions or [3D Fix Manager](https://helixmod.blogspot.com/2017/05/3d-fix-manager.html). Start with the maintained [Geo11 releases](https://github.com/ThreeDeeJay/geo-11/releases) and [Helix Mod community fixes](https://helixmod.blogspot.com/). A legacy NVIDIA-driver-only fix needs a compatible stereo renderer first.
-2. In the left **Input/Games** tab, use **Choose game...** and select the rendering executable. With the game closed and display/emitter timing ready, click **Prepare game**. This connects the adapter if needed and arms automatic attachment. Geo11 uses its existing output settings automatically. Other providers require the layout they actually produce; frame sequential is preferred and SBS/TAB are fallbacks.
-3. Launch the game normally in windowed or borderless mode on the selected output display. The app watches the exact EXE even while minimized or on **Tuning**, attaches when the provider appears, and starts output after a complete pair and foreground game window are available. **Cancel preparation / stop game 3D** stops watching. Preparation cannot repair an incompatible or crashing renderer.
-
-Before updating or removing a community fix, close the game and use **Disconnect adapter**. See [game setup and troubleshooting](docs/USAGE.md#games-existing-geo11-fixes).
-
-### 6. Play a stereo movie with VLC
-
-Install [64-bit VLC 3.x](https://www.videolan.org/vlc/), then select **Input/Games > Source > VLC stereo movie**, choose **Half SBS**, **Full SBS** or **Top / bottom** under **Packing**, use **Choose movie...**, and click **Start source**. The same packing choices are available for **Stereo image** and **Capture window**. Half SBS restores squeezed eye widths; Full SBS retains each eye's native proportions. Both preserve the intended aspect ratio. Start the calibrated **3D preview**, **Windowed preview** or fullscreen output. Restart the source after changing packing. Audio, pause/resume, volume and seeking are available under Input/Games. For portable VLC, use **Choose VLC...** and select its `vlc.exe` with the complete installation folder present. See [VLC playback details](docs/USAGE.md#vlc-stereo-movies).
-
-Every control is explained in [docs/USAGE.md](docs/USAGE.md). Emitter details and troubleshooting are in [docs/EMITTER.md](docs/EMITTER.md).
-
-Self tests that need no emitter:
-
-```powershell
-.\build\bin\Release\VisionRestoration.exe --gpu-test
-.\build\bin\Release\VisionRestoration.exe --smoke-test
-```
-
-## Roadmap
-
-- [x] Original emitter control without the NVIDIA stereo driver
-- [x] Clean full-screen 3D through the glasses on a 240 Hz OLED (black frame insertion, SDR and HDR)
-- [x] Side-by-side capture from a window (proven with Dolphin)
-- [ ] Whole screen converted with AI depth (built 2026-09-15, checked on the desktop, not yet through the glasses)
-- [ ] Stable app-hosted Geo11 DX11 gameplay; capture is implemented, game compatibility remains unresolved
-- [ ] Broad compatibility with existing 3D Vision games and community fixes
-- [ ] Games with native stereo 3D (never tested)
-- [ ] LCD, QLED and Mini-LED displays without ghosting and crosstalk
-- [x] OLED operation at 120 Hz (user confirmation, 2026-09-15)
-- [ ] Other refresh rates proven (100, 144 Hz)
-- [ ] A working general in-game hook, instead of per-game support
-- [x] AMD output-only tests (keyed mutex and shared GPU fence transport)
-- [ ] Game/optical tests on AMD, Intel and additional NVIDIA generations
-- [ ] DIY RP2040 emitter (firmware written, hardware untested)
-- [x] Portable public release packaging with the redistributable AI helper and runtime
-
-## Documentation
-
-- [Usage](docs/USAGE.md)
-- [Single-screen games and media: compatibility design](docs/STEREO-COMPATIBILITY.md)
-- [Emitter](docs/EMITTER.md)
-- [Timing calibration](docs/TIMING-CALIBRATION.md)
-- [Full screen at 120 Hz](docs/FULLSCREEN-120HZ.md)
-- [DIY RP2040 emitter](docs/RP2040.md)
-- [Development log](docs/STATUS.md)
+The app is built to `build\bin\Release\VisionRestoration.exe`. Developer notes are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Contributing
 
-This is a personal project built for one setup, published to show that the 3D Vision USB emitter can be unlocked for other monitors and newer graphics cards. Help is most useful on established-fix compatibility, native stereo backends, LCD/QLED crosstalk, and testing on other GPUs and displays.
+This is a personal project, published to show that 3D Vision can live on. The most useful help is testing on other displays and graphics cards, LCD crosstalk, and game compatibility. Bug reports help most with your display model, refresh rate, graphics card and `reports/session.log`.
 
-Bug reports help most when they include your display model, refresh rate, GPU and `reports/session.log`.
+## Credits and license
 
-## Credits
+Built with [libnvstusb](https://github.com/eruffaldi/libnvstusb) (emitter protocol reference), [libusb](https://libusb.info/), [libwdi](https://github.com/pbatard/libwdi), [Dear ImGui](https://github.com/ocornut/imgui) and the [ReShade](https://github.com/crosire/reshade) add-on API. No third-party source is stored in this repository; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Built with [libnvstusb](https://github.com/eruffaldi/libnvstusb) (emitter protocol reference), [libusb](https://libusb.info/), [libwdi](https://github.com/pbatard/libwdi), [Dear ImGui](https://github.com/ocornut/imgui) and the [ReShade](https://github.com/crosire/reshade) add-on API. Third-party source is not committed to this repository; portable archives include the permitted runtime components and their notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-## License
-
-[GPL-3.0-or-later](LICENSE). NVIDIA firmware is not included and is not covered by this license.
-
-Not affiliated with or endorsed by NVIDIA. "3D Vision" is a trademark of NVIDIA Corporation.
+Licensed under [GPL-3.0-or-later](LICENSE). NVIDIA's firmware is not included and is not covered by this license. Not affiliated with or endorsed by NVIDIA. "3D Vision" is a trademark of NVIDIA Corporation.

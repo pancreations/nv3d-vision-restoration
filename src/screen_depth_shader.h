@@ -12,7 +12,9 @@ inline constexpr char screenDepthShader[]=R"HLSL(
 //         of the picture, z search steps, w mip level for the downscale
 // view:   xy 1 / eye image size, z 1 = scRGB picture, w captured SDR white level
 cbuffer P:register(b0){float4 stereo;float4 mode;float4 view;};
-Texture2D image:register(t0);Texture2D<float> nearMap:register(t1);SamplerState smp:register(s0);
+// psSearch writes, per pixel of a smaller grid, where this eye's color comes from (as an offset of
+// the width); psApply draws the full-size eye from that grid with one picture sample per pixel.
+Texture2D image:register(t0);Texture2D<float> nearMap:register(t1);Texture2D<float> sourceMap:register(t2);SamplerState smp:register(s0);SamplerState nearest:register(s1);
 struct V{float4 pos:SV_POSITION;float2 uv:TEXCOORD0;};
 V vs(uint id:SV_VertexID){V o;o.uv=float2((id<<1)&2,id&2);o.pos=float4(o.uv*float2(2,-2)+float2(-1,1),0,1);return o;}
 float3 srgb(float3 c){return lerp(12.92*c,1.055*pow(max(c,0),1/2.4)-.055,step(.0031308,c));}
@@ -23,10 +25,8 @@ float shift(float n){
     if(r<=1)return halfSeparation*(1-r);
     float pop=max(stereo.w,1e-3);return -halfSeparation*pop*tanh((r-1)/pop);
 }
-float4 ps(V i):SV_TARGET{
-    float2 uv=i.uv;
-    if(mode.y>.5){float g=saturate(nearness(uv)/max(stereo.z,1e-6)*.5);return float4(g,g,g,1);} // mid grey = screen depth
-    if(mode.x<.5||stereo.y<=0)return image.SampleLevel(smp,uv,0);
+// The picture x this eye shows at uv (stereo on, a nearness map bound).
+float sourceX(float2 uv){
     // This eye shows the source at uv.x - eye * t, where t is the half-parallax of that source.
     // March t from the nearest allowed surface to infinity; the first crossing is the visible one.
     float s=stereo.x;float lo=-stereo.y*.5*stereo.w,hi=stereo.y*.5;
@@ -45,7 +45,20 @@ float4 ps(V i):SV_TARGET{
         }
         prev=t;
     }
-    return image.SampleLevel(smp,float2(x,uv.y),0);
+    return x;
+}
+float4 ps(V i):SV_TARGET{
+    float2 uv=i.uv;
+    if(mode.y>.5){float g=mode.y>1.5?saturate(nearness(uv)):saturate(nearness(uv)/max(stereo.z,1e-6)*.5);return float4(g,g,g,1);} // original preview: mid grey = screen depth
+    if(mode.x<.5||stereo.y<=0)return image.SampleLevel(smp,uv,0);
+    return image.SampleLevel(smp,float2(sourceX(uv),uv.y),0);
+}
+float4 psSearch(V i):SV_TARGET{return float4(sourceX(i.uv)-i.uv.x,0,0,1);}
+// Nearest, not bilinear: blending a foreground and a background offset at an occlusion edge
+// would sample neither surface.
+float4 psApply(V i):SV_TARGET{
+    float eye=stereo.x>0?1:0;
+    return image.SampleLevel(smp,float2(i.uv.x+sourceMap.SampleLevel(nearest,float2((eye+i.uv.x)*.5,i.uv.y),0),i.uv.y),0);
 }
 float4 psDown(V i):SV_TARGET{
     float3 c=image.SampleLevel(smp,i.uv,mode.w).rgb;

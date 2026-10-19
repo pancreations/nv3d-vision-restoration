@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d11.h>
 #include <chrono>
+#include <algorithm>
 #include <stop_token>
 #include <thread>
 
@@ -10,9 +11,9 @@ namespace vision {
 // such polls per stereo pair capped a game under the 3D output at 32 pairs/s.
 // A high-resolution waitable timer keeps its precision in that state.
 // Returns after about half a millisecond, or at once when the optional event is signalled.
-inline void shortWait(HANDLE event=nullptr){
+inline void shortWait(HANDLE event=nullptr,long delayUs=500){
     struct Timer {HANDLE handle=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);~Timer(){if(handle)CloseHandle(handle);}};
-    thread_local Timer timer;LARGE_INTEGER due;due.QuadPart=-5000; // 0.5 ms
+    thread_local Timer timer;LARGE_INTEGER due;due.QuadPart=-10LL*delayUs; // relative time in 100 ns units
     HANDLE handles[2]{timer.handle,event};
     if(timer.handle&&SetWaitableTimer(timer.handle,&due,0,nullptr,nullptr,FALSE))WaitForMultipleObjects(event?2:1,handles,FALSE,100);
     else if(event)WaitForSingleObject(event,1);else Sleep(1);
@@ -21,15 +22,22 @@ inline void shortWait(HANDLE event=nullptr){
 // last completed pair and abandons this publication on cancellation or failure.
 template<class Poll>
 HRESULT waitForGpuCompletion(Poll poll,std::stop_token stop,
-    std::chrono::steady_clock::duration timeout=std::chrono::seconds(5)) {
-    const auto deadline=std::chrono::steady_clock::now()+timeout;
+    std::chrono::steady_clock::duration timeout=std::chrono::seconds(5),
+    std::chrono::steady_clock::duration spinBudget=std::chrono::microseconds(150)) {
+    const auto started=std::chrono::steady_clock::now();
+    const auto deadline=started+timeout;
+    const auto spinDeadline=std::min(deadline,started+spinBudget);
     for(;;){
         if(stop.stop_requested())return HRESULT_FROM_WIN32(ERROR_CANCELLED);
         BOOL complete=FALSE;const HRESULT hr=poll(&complete);
         if(FAILED(hr))return hr;
         if(hr==S_OK&&complete)return S_OK;
-        if(std::chrono::steady_clock::now()>=deadline)return DXGI_ERROR_WAIT_TIMEOUT;
-        shortWait();
+        const auto now=std::chrono::steady_clock::now();
+        if(now>=deadline)return DXGI_ERROR_WAIT_TIMEOUT;
+        // Short copies can finish before a sleeping worker gets scheduled again.
+        // The caller bounds spinning; slow GPU work still sleeps and retains the timeout.
+        if(now<spinDeadline){YieldProcessor();continue;}
+        shortWait(nullptr,50);
     }
 }
 }

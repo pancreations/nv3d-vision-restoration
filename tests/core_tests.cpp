@@ -11,6 +11,17 @@ static int checks=0;
 static void require(bool b,const char* msg){++checks;if(!b)throw std::runtime_error(msg);}
 template<class F>void rejects(F f){bool threw=false;try{f();}catch(const std::exception&){threw=true;}require(threw,"Expected validation failure");}
 int main(){try{
+    for(double hz:{60.,119.88,120.,240.}){
+        const double period=1/hz;
+        require(!emitterCadenceDiscontinuous(Eye::Black,0,Eye::Left,10,period),"First eye does not reacquire a previous cadence");
+        require(!emitterCadenceDiscontinuous(Eye::Left,10,Eye::Right,10+period+.00002,period),"Ordinary timestamp jitter does not reset the emitter lock");
+        require(emitterCadenceDiscontinuous(Eye::Left,10,Eye::Left,10+period,period),"Repeated eye forces immediate firmware eye acquisition");
+        require(emitterCadenceDiscontinuous(Eye::Left,10,Eye::Right,10+3*period,period),"A gap reacquires even when eye parity is unchanged");
+        TimingTracker clock;for(unsigned n=1;n<=20;++n)clock.observe(n,10+n*period);
+        require(clock.futureRefresh(22,clock.predict(21))==22,"Queued future display prediction remains unchanged");
+        require(clock.futureRefresh(21,clock.predict(24)+period*.2)==25,"CPU stall skips past refreshes before choosing the eye and black slot");
+        require(clock.predict(clock.futureRefresh(21,clock.predict(24)+period*.2))>clock.predict(24)+period*.2,"Recovered shutter target remains in the future");
+    }
     require(rp2040TimingSupported(120,Sequence::Repeated,true),"RP2040 LCD 120 Hz preload supported");
     require(rp2040TimingSupported(119.88,makeSequence(4,0),true),"Fractional TV with four held refreshes supported");
     require(rp2040TimingSupported(60,Sequence::Repeated,true),"60 Hz LCD can test 15 images per eye/s");
@@ -56,9 +67,12 @@ int main(){try{
     {Settings s;s.leftUs=250;s.rightUs=3000;applyTimingPreset(s,240);require(s.leftUs==250&&s.rightUs==1500,"IR preset respects minimum shutter duration");rejects([&]{applyTimingPreset(s,90);});require(s.refresh==240,"Unsupported preset leaves settings intact");applyTimingPreset(s,100);require(s.refresh==100&&std::abs(s.leftUs-600)<1e-9&&std::abs(s.rightUs-std::min(3600.0,calibrationMaxShutterUs(100)))<1e-9,"100 Hz preset scales shutter by the frame period");}
     // Recorded display-refresh anchors: queue depth and composition must not
     // invent an extra refresh between an image and its shutter command.
-    require(presentationQueueDepth(119.98)==3&&presentationQueueDepth(120)==3,"120 Hz keeps its existing presentation reserve");
-    require(presentationQueueDepth(239.98)==6&&presentationQueueDepth(240)==6,"240 Hz must retain the same time reserve as 120 Hz");
-    require(presentationQueueDepth(144)==4&&presentationQueueDepth(360)==maxPresentationQueueDepth,"Refresh-based queue is bounded");
+    const struct {double hz;unsigned depth;} presentationCases[]={{60,3},{119.98,3},{120,3},{144,4},{165,5},{239.98,6},{240,6},{360,8}};
+    for(auto [hz,depth]:presentationCases){
+        require(presentationQueueDepth(hz)==depth,"Official emitter preserves refresh-scaled display buffering");
+        require(presentationQueueDepth(hz,true)==depth,"Device-scheduled emitter still needs display buffering against GPU stalls");
+        if(hz<=320)require(presentationQueueDepth(hz)/hz>=.025-1e-12,"Display queue retains at least 25 ms before the capacity limit");
+    }
     rejects([]{presentationQueueDepth(0);});rejects([]{presentationQueueDepth(std::nan(""));});
     require(emitterCommandQueueCapacity>maxPresentationQueueDepth,"Every queued eye frame needs space for its shutter command");
     for(uint64_t displayedRefresh:{1000ull,1001ull,2005ull})for(uint32_t queued=1;queued<=maxPresentationQueueDepth;queued++){
@@ -70,6 +84,45 @@ int main(){try{
     require(refreshForPresent(0,UINT32_MAX,50)==51,"Present counter wrap preserves next refresh");
     require(presentForRefresh(51,UINT32_MAX,50)==0,"Inverse present mapping handles counter wrap");
     require(refreshForPresent(42,41,1002)==1003,"Late frame feedback reanchors the next prediction");
+    {
+        // GPU starvation drains the display queue. Once submission resumes,
+        // DXGI can still report the same last displayed present while the CPU
+        // refills all six slots. A time-only correction picks the next vblank
+        // for every frame, stretching one BFI black into a visible blackout.
+        constexpr double hz=240,origin=10,p=1/hz;
+        TimingTracker clock;for(uint64_t n=980;n<=1000;++n)clock.observe(n,origin+n*p);
+        const double resumed=clock.predict(1006)+p*.2;
+        PresentRefreshReservation queue;
+        unsigned unreservedBlacks=0,reservedBlacks=0;
+        for(uint32_t id=41;id<=46;++id){
+            const auto prediction=clock.futureRefresh(refreshForPresent(id,40,1000),resumed);
+            unreservedBlacks+=sequenceSlot(Sequence::BlackInsertion,prediction,false).eye==Eye::Black;
+            const auto expected=queue.next(prediction);
+            require(expected==1007+(id-41),"Refilling a stalled queue assigns distinct consecutive display refreshes");
+            reservedBlacks+=sequenceSlot(Sequence::BlackInsertion,expected,false).eye==Eye::Black;
+            require(queue.commit(id,expected),"Each accepted refill present reserves one display refresh");
+        }
+        require(unreservedBlacks==6&&reservedBlacks==3,"GPU stall recovery preserves BFI cadence instead of queuing six black frames");
+        require(queue.next(refreshForPresent(47,41,1007))==1013,"Delayed matching feedback preserves queued refresh reservations");
+        require(queue.next(refreshForPresent(47,41,1009))==1015,"A newly observed display slip advances beyond existing reservations");
+        require(!queue.commit(46,5000)&&queue.refresh==1012,"Duplicate occluded present cannot reserve another refresh");
+        require(!queue.commit(45,5000)&&queue.refresh==1012,"Stale present identifier cannot replace a queued reservation");
+        require(!queue.observe(40)&&queue.next(1006)==1013,"Old pre-stall feedback cannot erase queued refresh reservations");
+        require(!queue.observe(47)&&queue.valid,"Unsubmitted present feedback cannot release queued reservations");
+        require(queue.observe(41),"Displaying the first post-stall frame makes the actual anchor authoritative again");
+        require(queue.next(refreshForPresent(47,41,1006))==1012,"Actual feedback can correct an overpredicted refresh backward");
+        require(!queue.commit(46,5000),"Releasing a refresh reservation does not accept a duplicate present");
+        require(queue.commit(47,1012),"Submission resumes from the corrected actual refresh anchor");
+        require(queue.commit(48,1020)&&queue.commit(49,1021),"A second stall establishes a newer reservation origin");
+        require(!queue.observe(47)&&queue.next(1013)==1022,"Feedback before a newer stall cannot erase its reservations");
+        require(queue.observe(48)&&queue.next(1021)==1021,"The newer post-stall frame releases its temporary refresh floor");
+        // Confirmed clock/counter replacements reset the reservation with the
+        // renderer's anchor; isolated bad reports must leave it in place.
+        queue.reset();require(queue.next(12)==12,"Confirmed counter restart releases the old refresh domain");
+        require(queue.commit(UINT32_MAX,12)&&queue.commit(0,13),"Reservation accepts present counter rollover");
+        require(queue.next(12)==14,"Counter rollover retains the next queued display slot");
+        require(!queue.observe(UINT32_MAX-1)&&queue.observe(0),"Refresh feedback releases its origin across present counter rollover");
+    }
     {
         PresentRefreshAnchor anchor;anchor.observe(40,1000,false);
         // A direct-flip miss on every report used to keep the old two-report
@@ -301,6 +354,31 @@ int main(){try{
             require(loaded.panelRiseUs==1500&&loaded.cancelCrosstalk&&std::abs(loaded.cancelStrength-1.25f)<1e-6,"LightBoost settings survive a profile reload");require(loaded.leakProfile[0]==0,"The derived leak profile is not stored");std::filesystem::remove(lbFile);
             {Settings c;c.cancelStrength=3;rejects([&]{validate(c);});}{Settings c;c.panelRiseUs=-1;rejects([&]{validate(c);});}{Settings c;c.leakProfile[2]=1.5f;rejects([&]{validate(c);});}
         }
+        {
+            require(Settings{}.captureMethod==CaptureMethod::DesktopDuplication,"New profiles keep DXGI for AI desktop capture");
+            require(Settings{}.windowCaptureMethod==CaptureMethod::WindowsGraphicsCapture,"New profiles isolate captured windows from overlapping output");
+            auto captureFile=std::filesystem::temp_directory_path()/"vision-capture-setting.ini";
+            for(auto desktop:{CaptureMethod::DesktopDuplication,CaptureMethod::WindowsGraphicsCapture})
+                for(auto window:{CaptureMethod::DesktopDuplication,CaptureMethod::WindowsGraphicsCapture}){
+                Settings c;c.captureMethod=desktop;c.windowCaptureMethod=window;saveProfile(captureFile,c);const auto loaded=loadProfile(captureFile);
+                require(loaded.captureMethod==desktop&&loaded.windowCaptureMethod==window,"Desktop and window capture preferences survive reload independently");
+            }
+            // Older profiles had one shared capture preference. Keep it for
+            // desktop conversion without bringing desktop occlusion into games.
+            for(int legacyMethod:{-1,0,1}){
+                {std::ofstream f(captureFile);f<<"version 11\nwidth 1920\nheight 1080\nrefresh 120\n";if(legacyMethod>=0)f<<"capture_method "<<legacyMethod<<'\n';}
+                const auto legacy=loadProfile(captureFile);
+                require(legacy.captureMethod==CaptureMethod(legacyMethod<0?0:legacyMethod)&&legacy.windowCaptureMethod==CaptureMethod::WindowsGraphicsCapture,"Old profiles preserve desktop preference and default window capture to isolation");
+                saveProfile(captureFile,legacy);const auto migrated=loadProfile(captureFile);
+                require(migrated.captureMethod==legacy.captureMethod&&migrated.windowCaptureMethod==CaptureMethod::WindowsGraphicsCapture,"Migrated profile keeps independent capture defaults after save");
+            }
+            for(int invalid:{-1,2}){
+                Settings c;c.windowCaptureMethod=CaptureMethod(invalid);rejects([&]{validate(c);});
+                {std::ofstream f(captureFile);f<<"version 11\nwidth 1920\nheight 1080\nrefresh 120\nwindow_capture_method "<<invalid<<'\n';}
+                rejects([&]{loadProfile(captureFile);});
+            }
+            std::filesystem::remove(captureFile);
+        }
         {   // Hold/black sequences at any rate: encoding, slots, emitter period, model and the comparison table.
             require(makeSequence(1,0)==Sequence::Alternating&&makeSequence(1,1)==Sequence::BlackInsertion&&makeSequence(2,0)==Sequence::Repeated,"Classic patterns keep their codes");
             for(unsigned hold=1;hold<=4;hold++)for(unsigned black=0;hold+black<=8;black++){Sequence s=makeSequence(hold,black);require(sequenceHold(s)==hold&&sequenceBlack(s)==black&&sequenceValid(s),"Hold/black round trip");require(cycleLength(s)==2*(hold+black),"Cycle is two runs");
@@ -327,7 +405,7 @@ int main(){try{
             rejects([&]{compareSequences(240,va240,1,.5,.01,nullptr);});
             // Display type and frames-per-eye choice.
             {Settings k;k.panelResponseUs=4321;k.panelRiseUs=1234;for(auto kind:{PanelKind::OLED,PanelKind::VA,PanelKind::IPS,PanelKind::MiniLED}){applyPanelKind(k,kind);require(k.panelKind==kind&&k.panelResponseUs==4321&&k.panelRiseUs==1234&&k.blackFloor==0,"Panel family must not invent response measurements or raise blacks");}
-             {Settings c;c.blackFloor=.5f;rejects([&]{validate(c);});}{Settings c;c.blackFloor=-.1f;rejects([&]{validate(c);});}{Settings c;c.blackFloor=.25f;validate(c);auto file=std::filesystem::temp_directory_path()/"vision-floor-test.ini";saveProfile(file,c);require(std::abs(loadProfile(file).blackFloor-.25f)<1e-6,"Black floor survives a profile reload");std::filesystem::remove(file);}
+             {Settings c;c.blackFloor=.5f;rejects([&]{validate(c);});}{Settings c;c.blackFloor=-.5f;rejects([&]{validate(c);});}{Settings c;c.blackFloor=-.2f;validate(c);}{Settings c;c.blackFloor=.25f;validate(c);auto file=std::filesystem::temp_directory_path()/"vision-floor-test.ini";saveProfile(file,c);require(std::abs(loadProfile(file).blackFloor-.25f)<1e-6,"Black floor survives a profile reload");std::filesystem::remove(file);}
              k.panelResponseUs=777;applyPanelKind(k,PanelKind::Custom);require(k.panelResponseUs==777&&k.panelKind==PanelKind::Custom,"Custom keeps hand-entered numbers");validate(k);
              auto file=std::filesystem::temp_directory_path()/"vision-kind-test.ini";k.panelKind=PanelKind::VA;saveProfile(file,k);require(loadProfile(file).panelKind==PanelKind::VA,"Panel kind survives a profile reload");std::filesystem::remove(file);
              {Settings c;c.panelKind=PanelKind(9);rejects([&]{validate(c);});}{Settings c;c.panelKind=PanelKind(5);rejects([&]{validate(c);});}}

@@ -17,6 +17,7 @@ $deps = @(
     @{ Name = 'Dear ImGui v1.91.9b'; Url = 'https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b.zip'; Target = 'imgui-1.91.9b'; Check = 'imgui.cpp' }
     @{ Name = 'ReShade v6.8.0 add-on API headers'; Url = 'https://github.com/crosire/reshade/archive/refs/tags/v6.8.0.zip'; Target = 'reshade-main'; Check = 'include\reshade.hpp' }
     @{ Name = 'MinHook v1.3.4'; Url = 'https://github.com/TsudaKageyu/minhook/archive/refs/tags/v1.3.4.zip'; Target = 'minhook-1.3.4'; Check = 'include\MinHook.h' }
+    @{ Name = 'OpenVR SDK v2.15.6'; Url = 'https://github.com/ValveSoftware/openvr/archive/0924064316de3effbcd1acf1e309182a2deb1c05.zip'; Target = 'openvr'; Check = 'headers\openvr.h' }
     @{ Name = 'libusb 1.0.30 (Windows binaries)'; Url = 'https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.7z'; Target = 'libusb'; Check = 'VS2022\MS64\dll\libusb-1.0.dll'; Flat = $true }
     # Whole-screen AI depth: ONNX Runtime's DirectML build and DirectML itself, as NuGet packages (zip archives).
     @{ Name = 'ONNX Runtime 1.22.1 (DirectML build)'; Url = 'https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/1.22.1'; Target = 'onnxruntime'; Check = 'build\native\include\onnxruntime_c_api.h'; Flat = $true; File = 'Microsoft.ML.OnnxRuntime.DirectML.1.22.1.nupkg' }

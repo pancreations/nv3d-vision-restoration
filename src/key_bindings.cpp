@@ -39,7 +39,7 @@ std::vector<KeyBinding> defaultBindings(){
         {KeyAction::Target3,"LCD target 3",'3',0},
         {KeyAction::BrightnessUp,"Increase image brightness",0,0},
         {KeyAction::BrightnessDown,"Decrease image brightness",0,0},
-        {KeyAction::Hdr,"Toggle HDR output",0,0},
+        {KeyAction::Hdr,"Toggle HDR output (experimental)",0,0},
         {KeyAction::ConvergenceUp,"Increase convergence",0,0},
         {KeyAction::ConvergenceDown,"Decrease convergence",0,0}
     };

@@ -1,23 +1,58 @@
-# Connecting the actual emitter
+# Emitter setup and troubleshooting
 
-**Hardware update 2026-09-15:** both emitters have arrived. The RP2040 is flashed, its approved WinUSB driver is installed, and the app's connection check passes. A ten-second 120 Hz command test recorded 1200 opens and closes; the user subsequently confirmed good OLED 120 Hz stereo. LCD/QLED separation and OLED 240 Hz still need optical testing. See [RP2040 setup and lower-refresh experiments](RP2040.md). The instructions below describe the original NVIDIA emitter; do not use its RAM firmware loader to flash an RP2040.
+This page covers the original NVIDIA 3D Vision USB emitter. For the DIY emitter, see [RP2040](RP2040.md); never use the NVIDIA firmware loader on an RP2040.
 
-With no driver, Windows lists the emitter as **`USB\VID_0955&PID_7003`**, bus description "NVIDIA stereo controller", problem code 28. The app uses live Windows PnP discovery to find that driverless boot identity; `0955:0007` is the runtime identity after firmware upload.
+## How it works
 
-1. Connect the USB IR emitter directly to the PC. Open **Glasses check → Refresh USB**. The supported protocol profile recognizes `0955:0007` (runtime) and `0955:7003` (boot state); other NVIDIA devices are listed but receive no writes.
-2. This backend uses **WinUSB via libusb**, not NVIDIA's old stereoscopic graphics driver. The application ships an x64 [libwdi](https://github.com/pbatard/libwdi) bootstrap and generates, signs and installs an exact-device WinUSB package for `0955:7003` and `0955:0007` on each target PC. Approve the UAC prompt for each identity the first time it appears. No machine-specific instance, USB port, GPU identity, local path or `oem*.inf` name is copied between PCs.
-3. Press **Connect emitter**. Runtime descriptors must expose bulk OUT endpoints 1 and 2 in alternate setting zero. Unknown endpoint layouts are rejected.
-4. A boot interface with no endpoints needs matching RAM firmware. Download NVIDIA's [standalone USB controller package 390.41](https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe), run the portable release's `Prepare NVIDIA Firmware.cmd`, and select that downloaded EXE directly. The included extractor opens the package without running NVIDIA's installer, validates the firmware and writes `emitter.fw` beside the app. It also accepts an already extracted `nvstusb*.sys`. No Quadro GPU or separate archive-tool installation is required. Source builders can manually extract the SYS from `NV3DVisionUSB.Driver` using [7-Zip](https://www.7-zip.org/) and use the low-level command below. Proprietary firmware is not distributed publicly.
-5. **Verified 2026-09-12:** after RAM upload the emitter does not re-enumerate on its own. The application finds the active `0955:7003` PnP instance, requests an elevated Windows PnP restart, waits for `0955:0007`, and reconnects automatically. Port moves use live PnP discovery and the portable installer for both identities. An unplug loses RAM firmware and starts the boot state again; the app reloads it without resetting the stereo session or calibration.
-6. Start the 120 Hz glasses test. Confirm shutter activity through the actual lenses, then eye order, phase and duration. A successful USB transfer is not a successful optical test.
+The emitter has no permanent firmware. Each time it's plugged in, the PC has to load a small firmware file into it. Vision Restoration does this automatically, using `emitter.fw`, which you create once from NVIDIA's own package.
 
-The application detects and connects the emitter automatically, including after unplug/replug. USB device-change messages no longer close fullscreen stereo or discard calibration. Calibration changes autosave immediately and are not tied to window focus. When `0955:7003` returns on any port, the app installs WinUSB if necessary, reloads the volatile RAM firmware, restarts to `0955:0007`, and resumes shutter commands.
+Windows sees the emitter as two devices:
 
-CLI extraction (output must not exist):
+| When | USB ID |
+|---|---|
+| Just plugged in (no firmware yet) | `0955 7003` |
+| Firmware loaded and running | `0955 0007` |
+
+Each needs the WinUSB driver once per PC. After that, unplugging and replugging just works: the app reloads the firmware and carries on without losing your calibration.
+
+## Setup
+
+1. **Firmware:** download NVIDIA's [3D Vision USB controller package](https://us.download.nvidia.com/Windows/Quadro_Certified/NV3DVisionUSB/390.41/3dvisioncontrollerdriver.exe). Don't run it. Drag it onto `Prepare NVIDIA Firmware.cmd` in the app folder, which writes `emitter.fw`. An already extracted `nvstusb*.sys` also works.
+2. **Driver:** plug the emitter straight into the PC (no hub) and start the app. Accept the administrator prompt to install WinUSB. When the emitter restarts with its second ID, accept the prompt again if it appears.
+3. **Check:** start the 3D preview and look through the glasses. They should shutter, and each eye should see its own image after calibration.
+
+Don't install NVIDIA's 3D Vision driver, and don't change your graphics driver.
+
+## If automatic driver setup fails
+
+Use [Zadig](https://zadig.akeo.ie/):
+
+1. Choose **Options > List All Devices**.
+2. Select the NVIDIA device with USB ID `0955 7003`, choose **WinUSB**, and click **Install Driver**.
+3. Start the app so it loads the firmware. When the device returns as `0955 0007`, repeat for that ID, then click **Refresh USB** in the app.
+
+Only give WinUSB to those two IDs.
+
+## Troubleshooting
+
+| Problem | Try this |
+|---|---|
+| Emitter not listed | Plug it directly into the PC, then click **Refresh USB**. |
+| "Firmware missing" | Make sure `emitter.fw` is in the app folder (see step 1). |
+| Listed but can't connect | Install WinUSB for the ID shown (see above). |
+| Glasses shutter but the image is wrong | That's calibration, not the emitter: see the [user guide](USAGE.md#calibrating-your-glasses). |
+
+Command-line extraction for source builders (the output file must not exist yet):
 
 ```powershell
 .\build\bin\Release\vision_firmware.exe 'path\nvstusb.sys' 'path\emitter.fw'
 ```
+
+## Technical notes
+
+The rest of this page documents the emitter protocol and firmware behaviour for developers.
+
+Device handling: runtime descriptors must expose bulk OUT endpoints 1 and 2 in alternate setting zero; unknown layouts are rejected. After RAM upload the emitter does not re-enumerate on its own, so the app restarts the `0955:7003` PnP instance (elevated), waits for `0955:0007` and reconnects. The WinUSB packages are generated and signed per PC with [libwdi](https://github.com/pbatard/libwdi) for exactly these two IDs.
 
 ## Protocol and scheduling
 

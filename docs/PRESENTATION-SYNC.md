@@ -31,10 +31,18 @@ per-second figure in the status line and session.log as slipsPerSec); a composit
 change is the same case, since the queued presents land one refresh off and the mapping
 has caught up by the next frame. Full resynchronization remains for disjoint statistics,
 an occluded or resized output window, an unavailable emitter, and cadence changes in the
-settings. To reduce the slips themselves the process asks the graphics kernel for the
-HIGH scheduling class (ABOVE_NORMAL when refused; the class obtained is logged as
-gpuPriority) and the presenter device requests GPU thread priority 7; the present thread
+settings. To prevent the slips themselves the process requires the graphics kernel's
+REALTIME scheduling class (logged as gpuPriority; a refusal stops the output with an
+error) and the presenter device requests GPU thread priority 7; the present thread
 also opens each shared source texture once instead of on every pair.
+
+GPU contention (2026-10-19): HIGH was not enough. Under a Cycles OptiX render on the
+RTX 5070 Ti, experiments/gpu-contention measured the presenter-sized GPU submission
+waiting up to 57 ms at HIGH, with 54-124 waits per 10 s longer than the six-refresh
+flip queue (25 ms at 240 Hz). Each one let the queue run dry, so the display repeated a
+frame and a black slot of Left/Black/Right/Black reached an eye. At REALTIME the same
+load gave at most 1.4 ms and no wait longer than one refresh. A D3D12 HIGH-priority
+queue reached 25 ms; GLOBAL_REALTIME queues are refused without privilege.
 
 Refresh clock (2026-09-13, night): the presenter and the game host fit a least-squares
 line through the last 240 presentation timestamps (refresh counter against QPC time) and

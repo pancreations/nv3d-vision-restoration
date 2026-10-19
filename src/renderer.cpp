@@ -23,8 +23,8 @@ void Surface::create(HWND window,const LUID* luid,bool useHDR,unsigned latency){
     if(luid)check(factory->EnumAdapterByLuid(*luid,IID_PPV_ARGS(&adapter)),"Select display GPU");
     check(D3D11CreateDevice(adapter.Get(),adapter?D3D_DRIVER_TYPE_UNKNOWN:D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"Create D3D11 device");
     hdr=useHDR;
-    // Stereo supplies a refresh-based latency so a higher display rate does not
-    // silently halve the time available to survive GPU/Present stalls.
+    // Stereo scales buffering with refresh so higher rates retain time to
+    // survive GPU/Present stalls, regardless of how the emitter schedules IR.
     makeSwapChain(factory.Get(),window,latency);
 }
 void Surface::attach(ID3D11Device* existing,ID3D11DeviceContext* existingContext,HWND window,unsigned latency){
@@ -37,30 +37,42 @@ void Surface::attach(ID3D11Device* existing,ID3D11DeviceContext* existingContext
 void Surface::makeSwapChain(IDXGIFactory2* factory,HWND window,unsigned latency){
     if(latency<1||latency>maxPresentationQueueDepth)throw std::runtime_error("Presentation queue depth must be between 1 and 8.");
     RECT r{};GetClientRect(window,&r);width=std::max(1L,r.right);height=std::max(1L,r.bottom);
-    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=width;desc.Height=height;desc.Format=hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=std::max(4u,latency+1);desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    // Two writable buffers beyond the present queue (and the established four-buffer minimum).
+    // The frame-latency wait can release one frame more than the queue depth: 44 of 44 recorded
+    // miss events (2026-10-12) began with a zero-wait present, and with a single spare buffer that
+    // extra frame left none to draw into, so the display held a frame and the whole six-frame
+    // queue landed one refresh late (black frames on the eye refreshes: a visible flash).
+    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=width;desc.Height=height;desc.Format=hdr?DXGI_FORMAT_R10G10B10A2_UNORM:DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=std::max(4u,latency+2);desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     ComPtr<IDXGISwapChain1> chain;check(factory->CreateSwapChainForHwnd(device.Get(),window,&desc,nullptr,nullptr,&chain),"Create flip swap chain");check(chain.As(&swap),"Waitable swap chain");
     check(swap->SetMaximumFrameLatency(latency),"Set frame latency");waitable=swap->GetFrameLatencyWaitableObject();if(!waitable)throw std::runtime_error("No frame latency wait handle.");
     factory->MakeWindowAssociation(window,DXGI_MWA_NO_ALT_ENTER);
-    ComPtr<IDXGISwapChain3> color;check(swap.As(&color),"Swap chain color space");auto space=hdr?DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;UINT support=0;check(color->CheckColorSpaceSupport(space,&support),"Check HDR color space");if(!(support&DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))throw std::runtime_error("Selected output does not support requested color space.");check(color->SetColorSpace1(space),"Set presentation color space");
+    applyColor(hdr);
+}
+// HDR presents in the display's own signal format, 10-bit PQ/Rec.2020 (HDR10). The FP16 scRGB
+// chain it replaced had to be converted to that signal by DWM or the display pipeline, and in
+// HDR every switch between composition and direct flip cost 20-40 missed refreshes (each a
+// flash with black frame insertion) where the same switches in SDR cost none. There is no
+// other HDR format: an output that refuses HDR10 is an error. Buffers must be unbound.
+void Surface::applyColor(bool useHDR){
+    ComPtr<IDXGISwapChain3> color;check(swap.As(&color),"Swap chain color space");
+    auto use=[&](DXGI_FORMAT format,DXGI_COLOR_SPACE_TYPE space){
+        DXGI_SWAP_CHAIN_DESC1 current{};check(swap->GetDesc1(&current),"Output format");
+        if(current.Format!=format)check(swap->ResizeBuffers(0,width,height,format,DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT),"Change output format");
+        // DXGI reports color-space support for the current buffer format.
+        UINT support=0;return SUCCEEDED(color->CheckColorSpaceSupport(space,&support))&&(support&DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)&&SUCCEEDED(color->SetColorSpace1(space));
+    };
+    if(useHDR&&!use(DXGI_FORMAT_R10G10B10A2_UNORM,DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020))throw std::runtime_error("Selected output does not accept HDR10 (10-bit PQ, Rec.2020).");
+    if(!useHDR&&!use(DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709))throw std::runtime_error("Selected output does not support requested color space.");
+    pq=useHDR;
     ComPtr<ID3D11Texture2D> buffer;check(swap->GetBuffer(0,IID_PPV_ARGS(&buffer)),"Swap buffer");check(device->CreateRenderTargetView(buffer.Get(),nullptr,&target),"Swap render target");
 }
 void Surface::resize(unsigned w,unsigned h){if(!w||!h)return;context->OMSetRenderTargets(0,nullptr,nullptr);target.Reset();check(swap->ResizeBuffers(0,w,h,DXGI_FORMAT_UNKNOWN,DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT),"Resize output");width=w;height=h;ComPtr<ID3D11Texture2D> b;check(swap->GetBuffer(0,IID_PPV_ARGS(&b)),"Resized buffer");check(device->CreateRenderTargetView(b.Get(),nullptr,&target),"Resized target");}
 void Surface::bind(){auto* rt=target.Get();context->OMSetRenderTargets(1,&rt,nullptr);D3D11_VIEWPORT vp{0,0,float(width),float(height),0,1};context->RSSetViewports(1,&vp);}
 void Surface::setHdr(bool useHDR){
     if(useHDR==hdr)return;
-    ComPtr<IDXGISwapChain3> color;check(swap.As(&color),"Swap chain color space");
-    const auto space=useHDR?DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     context->OMSetRenderTargets(0,nullptr,nullptr);target.Reset();
-    check(swap->ResizeBuffers(0,width,height,useHDR?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT),"Change HDR output format");
-    // DXGI reports color-space support for the current buffer format.
-    UINT support=0;check(color->CheckColorSpaceSupport(space,&support),"Check output color space");
-    if(!(support&DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))throw std::runtime_error("Selected output does not support requested color space.");
-    check(color->SetColorSpace1(space),"Change output color space");
-    ComPtr<ID3D11Texture2D> buffer;check(swap->GetBuffer(0,IID_PPV_ARGS(&buffer)),"HDR output buffer");
-    check(device->CreateRenderTargetView(buffer.Get(),nullptr,&target),"HDR output target");hdr=useHDR;
+    applyColor(useHDR);hdr=useHDR;
 }
-
-
 
 struct DrawState {
     ComPtr<ID3D11VertexShader> vs;ComPtr<ID3D11PixelShader> ps;ComPtr<ID3D11Buffer> params;ComPtr<ID3D11SamplerState> sampler;
@@ -70,12 +82,17 @@ struct DrawState {
     // thread, which has less than one refresh period between the wait and the present.
     struct Opened { std::weak_ptr<StereoFrame> owner;const StereoFrame* frame=nullptr;ComPtr<ID3D11Texture2D> texture;ComPtr<ID3D11ShaderResourceView> view;ComPtr<IDXGIKeyedMutex> key; };
     std::vector<Opened> pool;
+    // The bound target is HDR10: the shader encodes its linear scRGB result to PQ/Rec.2020.
+    bool pqOutput=false;
+    // The control menu drawn into eye frames (see Presenter::showMenu): its image, its rectangle in
+    // output UV and the part of the image it fills.
+    ComPtr<ID3D11ShaderResourceView> menuView;float menuRect[4]{},menuTexture[2]{1,1};
     ~DrawState(){release();}
     void release(){view.Reset();opened.Reset();if(key){key->ReleaseSync(0);key.Reset();}active.reset();}
     void init(ID3D11Device* device){
         check(device->CreateVertexShader(compiled::vs,sizeof(compiled::vs),nullptr,&vs),"Vertex shader");
         check(device->CreatePixelShader(compiled::ps,sizeof(compiled::ps),nullptr,&ps),"Pixel shader");
-        D3D11_BUFFER_DESC b{};b.ByteWidth=144;b.Usage=D3D11_USAGE_DYNAMIC;b.BindFlags=D3D11_BIND_CONSTANT_BUFFER;b.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;check(device->CreateBuffer(&b,nullptr,&params),"Shader parameters");D3D11_SAMPLER_DESC s{};s.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;s.AddressU=s.AddressV=s.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;s.MaxLOD=D3D11_FLOAT32_MAX;check(device->CreateSamplerState(&s,&sampler),"Image sampler");
+        D3D11_BUFFER_DESC b{};b.ByteWidth=176;b.Usage=D3D11_USAGE_DYNAMIC;b.BindFlags=D3D11_BIND_CONSTANT_BUFFER;b.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;check(device->CreateBuffer(&b,nullptr,&params),"Shader parameters");D3D11_SAMPLER_DESC s{};s.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;s.AddressU=s.AddressV=s.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;s.MaxLOD=D3D11_FLOAT32_MAX;check(device->CreateSamplerState(&s,&sampler),"Image sampler");
     }
     bool accept(ID3D11Device* device,std::shared_ptr<StereoFrame> f){if(!f)return false;if(active && f->pairId==active->pairId && f==active)return true;
         Opened* entry=nullptr;for(auto& o:pool)if(o.frame==f.get()&&o.owner.lock()==f){entry=&o;break;}
@@ -91,26 +108,29 @@ struct DrawState {
         return true;
     }
     void draw(ID3D11DeviceContext* context,unsigned w,unsigned h,const Settings& s,Eye eye,bool preview,int pattern,double time,bool overlay=false,bool guardSlot=false,uint64_t refreshIndex=0){
-        float p[36]={float(w),float(h),float(time),0,float(int(eye)),float(pattern),preview?1.f:0.f,s.hdr?1.f:0.f,s.depth*4,s.peakNits,s.convergence,s.swapEyes?1.f:0.f,0,0,1,1,s.bandHeight,s.bandCenter,overlay?1.f:0.f,float(s.phaseUs),s.imageGain,std::clamp(s.blackFloor,0.f,.3f),0,0};
+        float p[44]={float(w),float(h),float(time),0,float(int(eye)),float(pattern),preview?1.f:0.f,s.hdr?1.f:0.f,s.depth*4,s.peakNits,s.convergence,s.swapEyes?1.f:0.f,0,0,1,1,s.bandHeight,s.bandCenter,overlay?1.f:0.f,float(s.phaseUs),s.imageGain,std::clamp(s.blackFloor,-.3f,.3f),0,0};
         for(size_t i=0;i<8;i++)p[24+i]=s.cancelCrosstalk?std::clamp(s.leakProfile[i],0.f,.95f):0.f;
         p[3]=float(refreshIndex%256);p[22]=guardSlot?1.f:0.f;p[23]=s.guardLevel;
-        p[32]=1;
+        p[32]=1;p[34]=pqOutput&&s.hdr?1.f:0.f;
+        // Only eye slots carry the menu; decided before a missing source turns the slot black.
+        p[35]=menuView&&eye!=Eye::Black?1.f:0.f;for(int i=0;i<4;++i)p[36+i]=menuRect[i];p[40]=menuTexture[0];p[41]=menuTexture[1];
         if(pattern==3 && active){p[12]=float(int(active->packing));p[13]=float(int(active->encoding));p[14]=float(active->width);p[15]=float(active->height);p[32]=active->sdrWhiteLevel;p[33]=active->eyeAspect;if(active->alignmentApplied)p[10]=0;}
         else if(pattern==3)p[4]=float(int(Eye::Black));
         D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(params.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped),"Map shader constants");memcpy(mapped.pData,p,sizeof(p));context->Unmap(params.Get(),0);
-        auto* cb=params.Get();ID3D11ShaderResourceView* views[2]{};views[active&&active->packing==Packing::SeparateEyes?1:0]=view.Get();auto* sm=sampler.Get();context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,&cb);context->PSSetShaderResources(0,2,views);context->PSSetSamplers(0,1,&sm);context->Draw(3,0);views[0]=views[1]=nullptr;context->PSSetShaderResources(0,2,views);
+        auto* cb=params.Get();ID3D11ShaderResourceView* views[2]{};views[active&&active->packing==Packing::SeparateEyes?1:0]=view.Get();auto* sm=sampler.Get();context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,&cb);context->PSSetShaderResources(0,2,views);{auto* m=menuView.Get();context->PSSetShaderResources(3,1,&m);}context->PSSetSamplers(0,1,&sm);context->Draw(3,0);views[0]=views[1]=nullptr;context->PSSetShaderResources(0,2,views);{ID3D11ShaderResourceView* none=nullptr;context->PSSetShaderResources(3,1,&none);}
     }
 };
-// A game rendering on the same GPU queues command buffers of several milliseconds; the graphics
-// kernel time-slices between processes, so the presenter's one-triangle draw can wait behind
-// them and miss its refresh. A higher scheduling class for this process puts the presenter's
-// work ahead of normal processes. HIGH may need SeIncreaseBasePriorityPrivilege; the next
-// class down is tried when the kernel refuses. Reported in the status for the session log.
+// Another process saturating the GPU (a Cycles viewport, a 4K game) keeps its work on the GPU for
+// tens of milliseconds; the graphics kernel time-slices between processes, so the presenter's
+// one-triangle draw waited behind it, outran the six-refresh flip queue and the display repeated a
+// frame: a black slot landed where an eye belonged. Measured with experiments/gpu-contention under a
+// Cycles OptiX render on the RTX 5070 Ti: HIGH class waited up to 57 ms (54-124 waits over 25 ms in
+// 10 s), REALTIME at most 1.4 ms with none over one refresh. REALTIME is granted without elevation
+// on this system. It is required: a lower class is the failure itself, so a refusal stops the output.
 static std::string raiseGpuSchedulingPriority(){
-    struct Level { D3DKMT_SCHEDULINGPRIORITYCLASS level;const char* name; };
-    for(Level l:{Level{D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH,"high"},Level{D3DKMT_SCHEDULINGPRIORITYCLASS_ABOVE_NORMAL,"above normal"}})
-        if(D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(),l.level)==0)return l.name;
-    return "normal (kernel refused a higher class)";
+    const NTSTATUS status=D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(),D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME);
+    if(status!=0){char text[160];std::snprintf(text,sizeof(text),"Windows refused realtime GPU scheduling for the output (status 0x%08lX); other GPU work would delay the eye frames.",(unsigned long)status);throw std::runtime_error(text);}
+    return "realtime";
 }
 void Presenter::start(HWND window,const Display& d,const Settings& s,bool preview,int pattern){start(window,d,s,preview,pattern,Diagnostics{});}
 void Presenter::start(HWND window,const Display& d,const Settings& s,bool preview,int pattern,const Diagnostics& diagnostics){stop();validate(s);if(s.hdr && !d.hdrEnabled)throw std::runtime_error("Enable HDR for this display in Windows before starting HDR output.");{std::lock_guard l(mutex_);settings_=s;pattern_=pattern;status_={};status_.running=true;status_.preview=preview;paused_=false;++revision_;}emitter_.configure(s);worker_=std::jthread([this,window,d,preview,diagnostics](std::stop_token stop){run(stop,window,d,preview,diagnostics);});}
@@ -125,6 +145,8 @@ void Presenter::pause(bool p){std::lock_guard l(mutex_);if(paused_==p)return;pau
 // only way the viewer re-locks it, so it can be reached from a control the game's focus does not steal.
 void Presenter::resync(){std::lock_guard l(mutex_);resyncRequested_=true;}
 void Presenter::showPhase(bool on){std::lock_guard l(mutex_);overlay_=on;}
+void Presenter::showMenu(HANDLE shared,uint64_t version,const RECT& rect,unsigned textureWidth,unsigned textureHeight){std::lock_guard l(mutex_);menu_={shared,version,rect,textureWidth,textureHeight};}
+void Presenter::hideMenu(){std::lock_guard l(mutex_);menu_={};}
 void Presenter::streamTo(HWND window,bool rightEye){
     std::unique_lock l(mutex_);streamWindow_=window;streamRightEye_=rightEye;status_.streamMessage.clear();
     if(window)return;
@@ -134,9 +156,11 @@ void Presenter::streamTo(HWND window,bool rightEye){
     // so a stalled presenter can never hang the user interface.
     streamIdle_.wait_for(l,std::chrono::milliseconds(500),[this]{return !streamOpen_;});
 }
+std::vector<std::string> Presenter::takeMissEvents(){std::lock_guard l(mutex_);std::vector<std::string> out(missEvents_.begin(),missEvents_.end());missEvents_.clear();return out;}
 RenderStatus Presenter::status()const{std::lock_guard l(mutex_);return status_;}
 void Presenter::run(std::stop_token stop,HWND window,Display display,bool preview,Diagnostics diagnostics){
     DWORD task=0;HANDLE mmcss=AvSetMmThreadCharacteristicsW(L"Games",&task);
+    if(mmcss)AvSetMmThreadPriority(mmcss,AVRT_PRIORITY_HIGH);
     // The output window normally sits unfocused behind the game (the pad follows focus). Windows 11
     // throttles background processes (EcoQoS, ignored timer resolution), which made the presenter and
     // the USB thread miss eye deadlines only while the game had focus. Opt the whole process out.
@@ -144,55 +168,103 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
         PROCESS_POWER_THROTTLING_STATE power{};power.Version=PROCESS_POWER_THROTTLING_CURRENT_VERSION;
         power.ControlMask=PROCESS_POWER_THROTTLING_EXECUTION_SPEED|PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;power.StateMask=0;
         SetProcessInformation(GetCurrentProcess(),ProcessPowerThrottling,&power,sizeof(power));}
-    static const std::string gpuPriority=raiseGpuSchedulingPriority();
     try{
+        const std::string gpuPriority=raiseGpuSchedulingPriority();
         // Every stage before the first present names itself in the status, so a session log
         // showing zero presents also shows where the output got stuck.
         auto stage=[&](const char* what){std::lock_guard l(mutex_);status_.message=what;};
         stage("Creating the output surface");
-        const unsigned queueDepth=diagnostics.queueDepth?diagnostics.queueDepth:preview?3:presentationQueueDepth(display.refresh);
+        const unsigned queueDepth=diagnostics.queueDepth?diagnostics.queueDepth:preview?3:presentationQueueDepth(display.refresh,emitter_.status().scheduled);
         Settings s;{std::lock_guard l(mutex_);s=settings_;}Surface surface;surface.create(window,&display.adapterLuid,s.hdr,queueDepth);stage("Creating the output shaders");DrawState draw;draw.init(surface.device.Get());stage("Waiting for the first frame slot");
         {ComPtr<IDXGIDevice> dxgi;if(SUCCEEDED(surface.device.As(&dxgi)))dxgi->SetGPUThreadPriority(7);}
         struct PresentRecord {UINT id;uint64_t expected;Slot slot;bool muted;};std::deque<PresentRecord> records;
-        TimingTracker clock;uint64_t slotIndex=0,revision=0,lastUsbLate=0;UINT lastObserved=0,lastRefresh=0,lastSubmitted=0;unsigned blank=16;unsigned slipWindow=0;double slipWindowStart=0;
+        TimingTracker clock;uint64_t slotIndex=0,revision=0,lastUsbLate=0;UINT lastObserved=0,lastRefresh=0;unsigned blank=16;unsigned slipWindow=0;double slipWindowStart=0;
         // Both DWM and direct flip report the actual displayed refresh. Recover
         // from a slip immediately, without retaining a stale eye/black parity.
         PresentRefreshAnchor anchor;
+        PresentRefreshReservation reservation;
         // PresentRefreshCount already identifies the refresh the image reached.
         // Composition mode is diagnostic information, not an extra display delay.
-        ComPtr<IDXGISwapChainMedia> media;surface.swap.As(&media);bool composed=false;
+        ComPtr<IDXGISwapChainMedia> media;surface.swap.As(&media);bool composed=false;int presentationMode=-1;
         RenderStatus local;local.running=true;local.preview=preview;local.gpuPriority=gpuPriority;local.queueDepth=queueDepth;local.message=preview?"PREVIEW - side-by-side, no optical validation":"Acquiring presentation timing";
         double begin=qpc(),last=begin,pairTime=0,lastPublish=0,lockedSince=begin;
         std::deque<double> recentIntervals;double intervalSum=0,intervalSumSq=0;
         // 2D stream view (stream_view.h): a second swap chain on this same device and
         // context, so it draws from the stereo pair this thread already holds open.
         std::unique_ptr<Surface> stream;HWND streamOpened=nullptr;double lastStream=0;
-        struct TraceFrame {double time,wait,source,draw,present,stats,stream;UINT submitted,expected,observed,refresh,sync;HRESULT result;bool composed;};
+        struct TraceFrame {double time,wait,source,draw,present,stats,stream;UINT submitted,expected,observed,refresh,sync;HRESULT result;bool composed;double gpuMs=-1,slackMs=-1;int mode=-1;};
         std::vector<TraceFrame> trace;if(!diagnostics.trace.empty())trace.reserve(30000);
+        // Miss evidence: the last 48 frames are always kept. A miss snapshots them plus the
+        // 16 frames after it, so each event shows which stage held the output (wait, source,
+        // draw, present, stream) and how the queued frames landed on the display.
+        std::deque<TraceFrame> recentFrames;std::vector<TraceFrame> eventFrames;std::string eventHeader;unsigned eventFramesLeft=0;uint64_t eventMisses=0,eventBlack=0,lastMissCount=0;
+        auto traceLine=[](std::ostringstream& o,const TraceFrame& f){o<<std::fixed<<std::setprecision(2)<<f.time*1000<<' '<<f.wait*1000<<' '<<f.source*1000<<' '<<f.draw*1000<<' '<<f.present*1000<<' '<<f.stats*1000<<' '<<f.stream*1000<<' '<<f.submitted<<' '<<f.expected<<' '<<f.observed<<' '<<f.refresh<<' '<<f.sync<<' '<<(f.mode==DXGI_FRAME_PRESENTATION_MODE_OVERLAY?"overlay":f.mode==DXGI_FRAME_PRESENTATION_MODE_NONE?"direct":f.mode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED?"composed":f.mode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE?"failed":"?")<<" | "<<f.gpuMs<<' '<<f.slackMs<<'\n';};
+        // GPU completion of each output frame: an event query ended after the frame's draw, polled
+        // (without flushing) once per loop. gpu = ms from Present until the frame was seen finished,
+        // slack = ms from then until the frame's refresh. Both are bounded by the ~4 ms poll: a frame
+        // that misses its refresh with slack still positive was finished in time, and the hold was
+        // downstream of the GPU; a negative slack means the frame itself was not rendered in time.
+        struct GpuMark {UINT present=0;ComPtr<ID3D11Query> done;double submitted=0,displayAt=0;};
+        // The control menu image from the UI thread. It is copied (when a new version is published and
+        // the UI is not writing it) into a texture of this device, so a busy UI never costs a frame.
+        MenuState menuState;struct {HANDLE handle=nullptr;uint64_t version=0;ComPtr<ID3D11Texture2D> shared,copy;ComPtr<IDXGIKeyedMutex> key;ComPtr<ID3D11ShaderResourceView> view;} menuImage;
+        std::deque<GpuMark> gpuMarks;std::vector<ComPtr<ID3D11Query>> spareQueries;
+        auto pollGpu=[&]{
+            while(!gpuMarks.empty()&&gpuMarks.front().present){
+                auto& m=gpuMarks.front();if(surface.context->GetData(m.done.Get(),nullptr,0,D3D11_ASYNC_GETDATA_DONOTFLUSH)!=S_OK)break;
+                const double t=qpc();
+                auto mark=[&](TraceFrame& f){if(f.submitted==m.present&&f.gpuMs<0){f.gpuMs=(t-m.submitted)*1000;f.slackMs=m.displayAt>0?(m.displayAt-t)*1000:-1;}};
+                for(auto& f:recentFrames)mark(f);for(auto& f:eventFrames)mark(f);
+                spareQueries.push_back(std::move(m.done));gpuMarks.pop_front();
+            }
+        };
         while(!stop.stop_requested() && IsWindow(window)){
             const double waitBegin=qpc();
             DWORD wait=WaitForSingleObject(surface.waitable,50);if(wait==WAIT_TIMEOUT){if(!local.presents)stage("Waiting for a frame slot; the swap chain is not turning over");continue;}if(wait!=WAIT_OBJECT_0)throw std::runtime_error("Presentation wait failed.");
             const double waitEnd=qpc();
-            bool paused,overlay,manualResync,streamRight;int pattern;uint64_t rev;HWND streamWindow;{std::lock_guard l(mutex_);s=settings_;paused=paused_;pattern=pattern_;rev=revision_;overlay=overlay_;manualResync=resyncRequested_;resyncRequested_=false;streamWindow=streamWindow_;streamRight=streamRightEye_;}
-            if(rev!=revision){revision=rev;begin=qpc();lockedSince=begin;local.elapsed=0;local.timingPassed=false;blank=16;slotIndex=0;clock.reset();anchor.reset();records.clear();lastObserved=lastRefresh=lastSubmitted=0;emitter_.suspend();}
+            pollGpu();
+            bool paused,overlay,manualResync,streamRight;int pattern;uint64_t rev;HWND streamWindow;{std::lock_guard l(mutex_);s=settings_;paused=paused_;pattern=pattern_;rev=revision_;overlay=overlay_;manualResync=resyncRequested_;resyncRequested_=false;streamWindow=streamWindow_;streamRight=streamRightEye_;menuState=menu_;}
+            if(rev!=revision){revision=rev;begin=qpc();lockedSince=begin;local.elapsed=0;local.timingPassed=false;blank=16;slotIndex=0;clock.reset();anchor.reset();reservation.reset();records.clear();lastObserved=lastRefresh=0;emitter_.suspend();}
             // Change the actual buffer precision and color space with the HDR
             // setting, keeping the output window and image source in place.
             surface.setHdr(s.hdr);
             RECT size{};GetClientRect(window,&size);if(size.right<=0||size.bottom<=0){if(!local.presents)stage("The output window has no size");emitter_.suspend();Sleep(20);continue;}
-            if(unsigned(size.right)!=surface.width || unsigned(size.bottom)!=surface.height){surface.resize(size.right,size.bottom);blank=16;records.clear();clock.reset();anchor.reset();lastObserved=lastRefresh=0;emitter_.suspend();}
+            if(unsigned(size.right)!=surface.width || unsigned(size.bottom)!=surface.height){surface.resize(size.right,size.bottom);blank=16;records.clear();clock.reset();anchor.reset();reservation.reset();lastObserved=lastRefresh=0;emitter_.suspend();}
             // Anchor the eye sequence to the display refresh counter once statistics are available.
             // Feedback below corrects future submissions when a prediction slips.
             uint64_t slotSeq=slotIndex;
-            if(!preview&&lastObserved){UINT previous=0;if(SUCCEEDED(surface.swap->GetLastPresentCount(&previous)))slotSeq=refreshForPresent(previous+1,lastObserved,lastRefresh);}
+            if(!preview&&anchor.valid){UINT previous=0;if(SUCCEEDED(surface.swap->GetLastPresentCount(&previous))){
+                const auto ready=clock.futureRefresh(refreshForPresent(previous+1,lastObserved,lastRefresh),qpc());
+                slotSeq=reservation.next(ready);
+                // Display feedback can lag a burst of submissions after a stall.
+                // Each accepted frame still needs its own upcoming refresh;
+                // repeatedly choosing the same one repeats its black/eye pixels.
+                if(slotSeq!=ready)++local.queueRefillCorrections;
+            }}
             auto slot=sequenceSlot(s.sequence,slotSeq,false);
+            if(menuState.handle&&!preview){
+                if(menuState.handle!=menuImage.handle){
+                    menuImage={};check(surface.device->OpenSharedResource(menuState.handle,IID_PPV_ARGS(&menuImage.shared)),"Open the control menu image");check(menuImage.shared.As(&menuImage.key),"Control menu image mutex");
+                    D3D11_TEXTURE2D_DESC d{};menuImage.shared->GetDesc(&d);d.MiscFlags=0;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;d.Usage=D3D11_USAGE_DEFAULT;d.CPUAccessFlags=0;
+                    check(surface.device->CreateTexture2D(&d,nullptr,&menuImage.copy),"Control menu copy");check(surface.device->CreateShaderResourceView(menuImage.copy.Get(),nullptr,&menuImage.view),"Control menu view");
+                    menuImage.handle=menuState.handle;
+                }
+                if(menuState.version!=menuImage.version&&menuImage.key->AcquireSync(0,0)==S_OK){surface.context->CopyResource(menuImage.copy.Get(),menuImage.shared.Get());check(menuImage.key->ReleaseSync(0),"Release the control menu image");menuImage.version=menuState.version;}
+                D3D11_TEXTURE2D_DESC d{};menuImage.copy->GetDesc(&d);const auto& r=menuState.rect;
+                draw.menuView=menuImage.version?menuImage.view:nullptr;
+                draw.menuRect[0]=float(r.left)/float(surface.width);draw.menuRect[1]=float(r.top)/float(surface.height);draw.menuRect[2]=float(r.right)/float(surface.width);draw.menuRect[3]=float(r.bottom)/float(surface.height);
+                draw.menuTexture[0]=float(r.right-r.left)/float(d.Width);draw.menuTexture[1]=float(r.bottom-r.top)/float(d.Height);
+            }else{draw.menuView=nullptr;if(!menuState.handle)menuImage={};}
             auto emitterStatus=emitter_.status();auto usbState=emitterStatus.state;
-            auto resync=[&]{emitter_.suspend();blank=16;slotIndex=0;clock.reset();anchor.reset();records.clear();lastObserved=lastRefresh=0;local.resyncs++;local.lastResyncSec=qpc()-begin;local.timingPassed=false;};
+            auto resync=[&]{emitter_.suspend();blank=16;slotIndex=0;clock.reset();anchor.reset();reservation.reset();records.clear();lastObserved=lastRefresh=0;local.resyncs++;local.lastResyncSec=qpc()-begin;local.timingPassed=false;};
             if(manualResync)resync();
             // Timing misses update diagnostics and the refresh anchor. Only the
             // user selects pause, stop or 2D; never demote running stereo here.
             auto slip=[&](unsigned count){
                 local.misses+=count;slipWindow+=count;
-                if(s.lcd.enabled&&emitterStatus.scheduled)resync();
+                lockedSince=qpc();local.timingPassed=false;
+                // The device schedules explicit future boundaries. A missed slot
+                // must not turn into sixteen black frames and a shutter shutdown.
             };
             if(!preview&&emitterStatus.late>lastUsbLate)slip(unsigned(emitterStatus.late-lastUsbLate));
             lastUsbLate=emitterStatus.late;
@@ -205,18 +277,35 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             const double sourceBegin=qpc();
             if(slot.pairBoundary&&!mute){auto next=source_.forPresentation();if(draw.accept(surface.device.Get(),next))source_.presented(next);pairTime=qpc()-begin;}
             const double sourceEnd=qpc();
-            surface.bind();draw.draw(surface.context.Get(),surface.width,surface.height,steady?steadyViewSettings(s):s,eye,preview&&!paused,pattern,pairTime,overlay&&!mute&&!steady,!mute&&!steady&&slot.eye==Eye::Black,slotIndex);
+            // Opening a new shared texture/view can stall the driver after the
+            // initial prediction. Re-select BOTH pixels and shutter deadline
+            // before drawing; never submit the old black/eye slot after a stall.
+            auto retarget=[&](double now){
+                if(preview||!anchor.valid||mute)return false;
+                const uint64_t readyRefresh=clock.futureRefresh(reservation.next(slotSeq),now);
+                if(readyRefresh!=slotSeq){
+                    slip(unsigned(std::min<uint64_t>(readyRefresh-slotSeq,UINT_MAX)));
+                    slotSeq=readyRefresh;slot=sequenceSlot(s.sequence,slotSeq,false);
+                    eye=steady?streamViewEye(s,false):slot.eye;
+                    return true;
+                }
+                return false;
+            };
+            retarget(sourceEnd);
+            surface.bind();draw.pqOutput=surface.pq;draw.draw(surface.context.Get(),surface.width,surface.height,steady?steadyViewSettings(s):s,eye,preview&&!paused,pattern,pairTime,overlay&&!mute&&!steady,!mute&&!steady&&slot.eye==Eye::Black,slotIndex);
+            // Mapping constants/submitting the draw can also stall the driver.
+            // Replace expired pixels before Present, keeping the acquired pair.
+            if(retarget(qpc()))draw.draw(surface.context.Get(),surface.width,surface.height,steady?steadyViewSettings(s):s,eye,preview&&!paused,pattern,pairTime,overlay&&!mute&&!steady,!mute&&!steady&&slot.eye==Eye::Black,slotIndex);
             const double drawEnd=qpc();
             // Predictive trigger for every backend: the eye command is timed from the predicted
             // vblank of the refresh this present will land on, not from retrospective statistics.
             // Retrospective triggering shifted by a frame whenever DWM switched between composition
             // and direct flip, which showed up as sudden crosstalk seconds after a clean start.
             const bool simulatedProbe=diagnostics.steadyTimingProbe&&diagnostics.simulateProbeTriggers&&usbState==EmitterState::Simulated;
-            if(!preview&&(!steady||simulatedProbe)&&!mute&&slot.trigger&&lastObserved&&clock.samples>=8&&blank==0) {
+            if(!preview&&(!steady||simulatedProbe)&&!mute&&slot.trigger&&anchor.valid&&clock.samples>=8&&blank==0) {
                 // Predict the next present's refresh before Present can block.
                 // Actual refresh statistics below still detect a missed prediction.
-                UINT previous=0;check(surface.swap->GetLastPresentCount(&previous),"Predict present identifier");
-                const uint64_t nextRefresh=refreshForPresent(previous+1,lastObserved,lastRefresh);
+                const uint64_t nextRefresh=slotSeq;
                 // Submit on the predicted vblank. Both supported emitters apply phase on-device:
                 // NVIDIA through its X delay timer and RP2040 through its scheduled open time.
                 const double target=clock.predict(nextRefresh);
@@ -226,12 +315,13 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
                     // A stale/past target or an unconfirmed counter restart is
                     // not a usable deadline. Leave the firmware's cadence alone.
                     slip(1);
-                    if(s.lcd.enabled&&emitterStatus.scheduled){mute=true;eye=Eye::Black;draw.draw(surface.context.Get(),surface.width,surface.height,s,eye,false,pattern,pairTime,false,false,slotIndex);}
                 } else {
                     Eye commandEye=slot.eye;if(s.swapEyes)commandEye=commandEye==Eye::Left?Eye::Right:Eye::Left;
-                    emitter_.submit(commandEye,target,clock.period*1e6);
+                    emitter_.submit(commandEye,target,clock.period*1e6,local.clockCorrections);
                 }
             }
+            {ComPtr<ID3D11Query> q;if(!spareQueries.empty()){q=std::move(spareQueries.back());spareQueries.pop_back();}else{D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT,0};check(surface.device->CreateQuery(&qd,&q),"Output frame completion query");}
+             surface.context->End(q.Get());gpuMarks.push_back({0,std::move(q),0,0});}
             const double presentBegin=qpc();
             UINT id=0;HRESULT h=surface.swap->Present(1,0);
             const double presentEnd=qpc();
@@ -244,27 +334,37 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             local.occluded=h==DXGI_STATUS_OCCLUDED;
             if(!local.occluded)check(h,"Present stereo output");
             check(surface.swap->GetLastPresentCount(&id),"Present identifier");
-            uint64_t expected=lastObserved?refreshForPresent(id,lastObserved,lastRefresh):0;
-            records.push_back({id,expected,mute?Slot{Eye::Black,false,false}:slot,mute});while(records.size()>64)records.pop_front();lastSubmitted=id;(void)lastSubmitted;
+            uint64_t expected=anchor.valid?slotSeq:0;
+            if(!local.occluded&&(records.empty()||records.back().id!=id)){
+                if(!preview&&anchor.valid)reservation.commit(id,expected);
+                records.push_back({id,expected,mute?Slot{Eye::Black,false,false}:slot,mute});while(records.size()>64)records.pop_front();
+            }
             DXGI_FRAME_STATISTICS stats{};HRESULT sh=surface.swap->GetFrameStatistics(&stats);
             if(SUCCEEDED(sh)){
                 bool modeChanged=false,directFlipReport=false;
-                if(media){DXGI_FRAME_STATISTICS_MEDIA fm{};if(SUCCEEDED(media->GetFrameStatisticsMedia(&fm))){bool c=fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED||fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE;directFlipReport=!c;if(c!=composed){composed=c;local.modeChanges++;modeChanged=true;}local.composed=composed;}}
+                if(media){DXGI_FRAME_STATISTICS_MEDIA fm{};if(SUCCEEDED(media->GetFrameStatisticsMedia(&fm))){presentationMode=int(fm.CompositionMode);bool c=fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSED||fm.CompositionMode==DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE;directFlipReport=!c;if(c!=composed){composed=c;local.modeChanges++;modeChanged=true;}local.composed=composed;}}
                 LARGE_INTEGER freq;QueryPerformanceFrequency(&freq);double sync=double(stats.SyncQPCTime.QuadPart)/double(freq.QuadPart);
                 const bool hadClock=clock.samples>=8;
-                const auto outliers=clock.rejectedSamples,corrections=clock.corrections;
+                const auto outliers=clock.rejectedSamples,corrections=clock.corrections,previousClockRefresh=clock.lastRefresh;
                 clock.observeContinuous(stats.SyncRefreshCount,sync);
+                if(clock.lastRefresh<previousClockRefresh){
+                    // Only a confirmed counter replacement moves the fitted
+                    // clock backwards. Reservations in its old counter domain
+                    // must not hold the new sequence far into the future.
+                    reservation.reset();anchor.reset();records.clear();lastObserved=lastRefresh=0;
+                }
                 local.clockOutliers+=clock.rejectedSamples-outliers;
                 local.clockCorrections+=clock.corrections-corrections;
                 if(hadClock&&clock.samples<8)++local.clockReacquires;
                 bool mismatch=false;
                 // Keep the present anchor and timestamp clock in the same counter
                 // domain while a changed/discontinuous report is being checked.
-                if(stats.PresentCount!=lastObserved&&clock.lastRefresh==stats.SyncRefreshCount){
+                if((!anchor.valid||stats.PresentCount!=lastObserved)&&clock.lastRefresh==stats.SyncRefreshCount){
                     auto record=std::find_if(records.begin(),records.end(),[&](auto& r){return r.id==stats.PresentCount;});
                     mismatch=record!=records.end()&&!record->muted&&record->expected&&record->expected!=stats.PresentRefreshCount;
                     if(record!=records.end()&&!record->muted&&record->slot.eye==Eye::Black&&sequenceSlot(s.sequence,stats.PresentRefreshCount,false).eye!=Eye::Black)++local.blackOnImage;
                     anchor.observe(stats.PresentCount,stats.PresentRefreshCount,!directFlipReport);
+                    reservation.observe(stats.PresentCount);
                     lastObserved=anchor.present;lastRefresh=UINT(anchor.refresh);
                 }
                 // Repair future submissions without a full blanking/relock cycle.
@@ -320,7 +420,19 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
                 streamIdle_.notify_all();lastPublish=0; // report the failure now, not in a quarter of a second
             }
             if(diagnostics.steadyTimingProbe){local.locked=false;local.message="Steady timing diagnostic: one eye, no emitter commands";}
-            if(!diagnostics.trace.empty()&&trace.size()<30000)trace.push_back({now-begin,waitEnd-waitBegin,sourceEnd-sourceBegin,drawEnd-sourceEnd,presentEnd-presentBegin,now-presentEnd,qpc()-now,id,UINT(expected),stats.PresentCount,stats.PresentRefreshCount,stats.SyncRefreshCount,sh,composed});
+            TraceFrame frame{now-begin,waitEnd-waitBegin,sourceEnd-sourceBegin,drawEnd-sourceEnd,presentEnd-presentBegin,now-presentEnd,qpc()-now,id,UINT(expected),stats.PresentCount,stats.PresentRefreshCount,stats.SyncRefreshCount,sh,composed};frame.mode=presentationMode;
+            if(!diagnostics.trace.empty()&&trace.size()<30000)trace.push_back(frame);
+            {auto& m=gpuMarks.back();if(!m.present){m.present=id;m.submitted=presentBegin;m.displayAt=anchor.valid&&clock.samples>=8&&expected?clock.predict(expected):0;}}
+            if(eventFramesLeft){eventFrames.push_back(frame);
+                if(--eventFramesLeft==0){std::ostringstream o;o<<std::fixed<<std::setprecision(1)<<"misses +"<<local.misses-eventMisses<<", black on image +"<<local.blackOnImage-eventBlack<<", capture pair "<<local.sourcePair<<", queue "<<queueDepth<<"\n"<<eventHeader;
+                    for(size_t i=0;i<eventFrames.size();++i){if(i==eventFrames.size()-16)o<<"--- miss detected on the frame above; following frames:\n";traceLine(o,eventFrames[i]);}
+                    eventFrames.clear();std::lock_guard l(mutex_);if(missEvents_.size()<64)missEvents_.push_back(o.str());}}
+            else if(!preview&&local.misses>lastMissCount){
+                std::ostringstream o;o<<std::fixed<<std::setprecision(3)<<"=== miss at "<<now-begin<<" s into output ("<<(composed?"composed":"direct flip")<<")\nms: time wait source draw present stats stream | submitted expected observed refresh sync mode | gpu slack\n";
+                eventHeader=o.str();eventFrames.assign(recentFrames.begin(),recentFrames.end());eventFramesLeft=16;eventMisses=lastMissCount;eventBlack=local.blackOnImage;
+            }
+            lastMissCount=local.misses;
+            recentFrames.push_back(frame);if(recentFrames.size()>48)recentFrames.pop_front();
             if(now-lastPublish>.25){std::lock_guard l(mutex_);status_=local;lastPublish=now;}
         }
         if(!diagnostics.trace.empty()){
@@ -336,7 +448,7 @@ void Presenter::exportReport(const std::filesystem::path& path,const Settings& s
     auto samples=r.intervals;std::sort(samples.begin(),samples.end());auto percentile=[&](double q){return samples.empty()?0:samples[size_t(q*(samples.size()-1))];};
     out<<std::setprecision(10)<<"Vision Restoration timing report\nProfile: "<<s.name<<"\nDisplay: "<<s.displayId<<"\nConnection: "<<s.connection<<"\nMode: "<<s.width<<'x'<<s.height<<" @ "<<s.refresh<<" Hz\nHDR: "<<s.hdr<<"\nPreview: "<<r.preview<<"\nSequence: "<<int(s.sequence)<<"\nPhase us: "<<s.phaseUs<<"\nLeft/right duration us: "<<s.leftUs<<'/'<<s.rightUs<<"\nSource: "<<source<<"\nElapsed seconds: "<<r.elapsed<<"\nPresents: "<<r.presents<<"\nDetected misses: "<<r.misses<<"\nResynchronizations: "<<r.resyncs<<"\nMeasured refresh Hz: "<<r.measuredHz<<"\nCPU present interval p50/p95/p99 ms: "<<percentile(.5)<<'/'<<percentile(.95)<<'/'<<percentile(.99)<<"\nUSB commands/errors/late: "<<usb.commands<<'/'<<usb.errors<<'/'<<usb.late<<"\nLast/max USB transfer us: "<<usb.lastTransferUs<<'/'<<usb.maxTransferUs<<"\nVblank jitter rms/max us: "<<r.vblankJitterRmsUs<<'/'<<r.vblankJitterMaxUs<<"\nPresent interval jitter us: "<<r.presentJitterUs<<"\nEye command timing error last/rms/max us: "<<usb.sendErrorLastUs<<'/'<<usb.sendErrorRmsUs<<'/'<<usb.sendErrorMaxUs<<"\nTiming block writes: "<<usb.timingWrites<<"\nGlasses operation confirmed: "<<s.glassesConfirmed<<"\nEye order confirmed: "<<s.eyeConfirmed<<"\nUser assessment: "<<s.assessment<<"\nMonitor settings: "<<s.monitorNotes<<"\nValidated: "<<s.validated<<"\nThese are host timings, not optical measurements.\n";
     out<<"Presenter status: "<<r.message<<"\n";
-    out<<"Queued presentation frames: "<<r.queueDepth<<"\n";
+    out<<"Queued presentation frames: "<<r.queueDepth<<"\nQueue refill corrections: "<<r.queueRefillCorrections<<"\n";
     out<<"Clock rejected samples/confirmed corrections: "<<r.clockOutliers<<'/'<<r.clockCorrections<<"\nStatistics discontinuities: "<<r.statsDisjoints<<"\nRepeated eye commands suppressed: "<<usb.repeatedCommands<<"\n";
     out<<"Emitter identity: "<<usb.identity<<"\nFirmware: "<<usb.firmwareVersion<<"\nPredictive device scheduling: "<<usb.scheduled<<"\nClock uncertainty us: "<<usb.clockUncertaintyUs<<"\nDevice open/close commands: "<<usb.deviceOpens<<'/'<<usb.deviceCloses<<"\nInterval distribution uses the first "<<samples.size()<<" collected samples.\n";
     if(s.lcd.enabled){const auto& t=s.lcd;auto e=lcdExposure(t,apertureWindowHz(r.measuredHz>0?r.measuredHz:s.refresh,s.sequence),s.signalScanUs);
@@ -541,7 +653,12 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
              for(UINT y=0;y<360&&allLifted;y++)for(UINT x=0;x<640&&allLifted;x++){auto* row=static_cast<uint8_t*>(m.pData)+y*m.RowPitch;for(unsigned ch=0;ch<3;ch++){double v=hdr?double(reinterpret_cast<uint16_t*>(row)[x*4+ch]):double(row[x*4+ch]);if(v==0)allLifted=false;}}
              context->Unmap(read.Get(),0);if(!allLifted)throw std::runtime_error("LCD black floor left a zero pixel in an eye frame.");}
             if(total(floor,Eye::Black)!=0)throw std::runtime_error("LCD black floor lit a black frame.");
-            report<<(hdr?"HDR":"SDR")<<" LCD black floor: lifts every eye-frame pixel, keeps black frames at zero PASS\n";}
+            report<<(hdr?"HDR":"SDR")<<" LCD black floor: lifts every eye-frame pixel, keeps black frames at zero PASS\n";
+            // Negative black level: the black point moves up, so the eye frame carries less light.
+            Settings crush;crush.hdr=hdr;crush.blackFloor=-.2f;
+            if(!(total(crush,Eye::Left)<total(plain,Eye::Left)))throw std::runtime_error("Negative black level did not darken the eye frame.");
+            if(total(crush,Eye::Black)!=0)throw std::runtime_error("Negative black level lit a black frame.");
+            report<<(hdr?"HDR":"SDR")<<" darker black level: darkens the eye frame, keeps black frames at zero PASS\n";}
         {
             Settings s;s.hdr=hdr;s.guardLevel=.5f;
             auto pixels=[&](Eye eye,bool guard,int pattern,uint64_t index){
@@ -676,6 +793,59 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
     draw.release();report<<"Presenter: separate texture-array eyes, SBS/TB eye boundaries, signed convergence and black margins PASS; hook: SBS/TB PASS\n";
     report<<"2D stream: all pixels retain one eye through repeated L/B/R/B cycles, both eye selections and eye swap, SBS/TAB/arrays PASS\n";
     report<<"Explicit timing diagnostic: fixed eye at every refresh; SBS/TAB/arrays PASS\n";
+    // Uniform eye colors cannot detect a vertical wrap. Use a monotonic red
+    // ramp, distinct top/bottom blue markers and a different green eye code.
+    // The aspect matches the live 3840x2126 client fitted to a 3840x2160 display;
+    // smaller textures keep this offscreen geometry check inexpensive.
+    {
+        constexpr unsigned inputWidth=16,inputHeight=128,outWidth=384,outHeight=216;
+        constexpr float eyeAspect=3840.f/2126.f;
+        std::vector<float> pixels(size_t(inputWidth)*inputHeight*4);
+        for(unsigned y=0;y<inputHeight;++y)for(unsigned x=0;x<inputWidth;++x){
+            auto* pixel=pixels.data()+(size_t(y)*inputWidth+x)*4;
+            pixel[0]=(float(y)+.5f)/inputHeight;
+            pixel[1]=x<inputWidth/2?.25f:.75f;
+            pixel[2]=y<inputHeight/8?.875f:y>=inputHeight*7/8?.125f:.5f;pixel[3]=1;
+        }
+        D3D11_TEXTURE2D_DESC desc{};desc.Width=inputWidth;desc.Height=inputHeight;
+        desc.MipLevels=desc.ArraySize=desc.SampleDesc.Count=1;desc.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA data{pixels.data(),inputWidth*4*sizeof(float),0};ComPtr<ID3D11Texture2D> input;
+        check(device->CreateTexture2D(&desc,&data,&input),"Vertical capture marker input");
+        draw.release();check(device->CreateShaderResourceView(input.Get(),nullptr,&draw.view),"Vertical capture marker view");
+        draw.active=std::make_shared<StereoFrame>();draw.active->packing=Packing::SideBySide;draw.active->encoding=Encoding::LinearScRGB;
+        draw.active->width=inputWidth;draw.active->height=inputHeight;draw.active->eyeAspect=eyeAspect;
+        desc.Width=outWidth;desc.Height=outHeight;desc.BindFlags=D3D11_BIND_RENDER_TARGET;
+        ComPtr<ID3D11Texture2D> target,read;check(device->CreateTexture2D(&desc,nullptr,&target),"Vertical capture marker target");
+        ComPtr<ID3D11RenderTargetView> targetView;check(device->CreateRenderTargetView(target.Get(),nullptr,&targetView),"Vertical capture marker RTV");
+        desc.BindFlags=0;desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        check(device->CreateTexture2D(&desc,nullptr,&read),"Vertical capture marker readback");
+        auto* view=targetView.Get();context->OMSetRenderTargets(1,&view,nullptr);D3D11_VIEWPORT viewport{0,0,float(outWidth),float(outHeight),0,1};context->RSSetViewports(1,&viewport);
+        for(bool preview:{false,true})for(Eye eye:{Eye::Left,Eye::Right}){
+            Settings settings;settings.hdr=true;draw.draw(context.Get(),outWidth,outHeight,settings,eye,preview,3,0);
+            context->CopyResource(read.Get(),target.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
+            check(context->Map(read.Get(),0,D3D11_MAP_READ,0,&mapped),"Read vertical capture markers");
+            bool correct=true;const unsigned paneWidth=preview?outWidth/2:outWidth;
+            const float fittedHeight=paneWidth/eyeAspect,top=(outHeight-fittedHeight)*.5f;
+            for(unsigned pane=0;pane<(preview?2u:1u);++pane){
+                float previous=-1;
+                for(unsigned y=0;y<outHeight;++y){
+                    const auto* row=reinterpret_cast<const float*>(static_cast<const uint8_t*>(mapped.pData)+size_t(y)*mapped.RowPitch);
+                    const auto* pixel=row+(pane*paneWidth+paneWidth/2)*4;
+                    const float sourceY=(float(y)+.5f-top)/fittedHeight;
+                    if(sourceY<0||sourceY>1){correct&=pixel[0]==0&&pixel[1]==0&&pixel[2]==0;continue;}
+                    const float expected=std::clamp(sourceY,.5f/inputHeight,1-.5f/inputHeight);
+                    correct&=std::abs(pixel[0]-expected)<.003f&&pixel[0]>=previous;
+                    correct&=std::abs(pixel[1]-((preview?pane:unsigned(eye))==0?.25f:.75f))<.003f;
+                    if(sourceY<.06f)correct&=pixel[2]>.85f;
+                    if(sourceY>.94f)correct&=pixel[2]<.15f;
+                    previous=pixel[0];
+                }
+            }
+            context->Unmap(read.Get(),0);
+            if(!correct)throw std::runtime_error("Captured SBS vertical rows wrapped, reversed, crossed eyes or escaped the fitted image.");
+        }
+        draw.release();report<<"Capture geometry: monotonic vertical rows, distinct top/bottom markers and both eyes; 3840x2126 aspect to 16:9, HDR full-eye and inspection panes PASS\n";
+    }
     // Capture must preserve scRGB values in HDR. SDR uses the captured display's
     // white level, not a curve that lifts shadows or darkens every white.
     for(bool hdr:{false,true})for(float white:{1.f,2.5f,4.f}){
@@ -699,6 +869,59 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
         }
     }
     draw.release();report<<"Capture: HDR values preserved, SDR gray/white at three desktop white levels, AI alignment applied once in both eyes PASS\n";
+    // HDR10 output: captured scRGB reaches the 10-bit target as PQ/Rec.2020 code values, black
+    // frames stay exactly zero, and the SDR stream view on the same draw state is not encoded.
+    {
+        const float values[]{.05f,.4f,1,1,2.5f,12.5f,0,1}; // left half of the SBS pair: 4, 32, 80 nits; right: 200, 1000, 0
+        D3D11_TEXTURE2D_DESC desc{};desc.Width=2;desc.Height=1;desc.MipLevels=desc.ArraySize=desc.SampleDesc.Count=1;desc.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA data{values,sizeof(values),0};ComPtr<ID3D11Texture2D> input;check(device->CreateTexture2D(&desc,&data,&input),"HDR10 input");
+        draw.release();check(device->CreateShaderResourceView(input.Get(),nullptr,&draw.view),"HDR10 input view");draw.active=std::make_shared<StereoFrame>();draw.active->encoding=Encoding::LinearScRGB;draw.active->width=2;draw.active->height=1;draw.active->alignmentApplied=true;
+        desc.Width=32;desc.Height=16;desc.BindFlags=D3D11_BIND_RENDER_TARGET;desc.Format=DXGI_FORMAT_R10G10B10A2_UNORM;
+        ComPtr<ID3D11Texture2D> target,read;check(device->CreateTexture2D(&desc,nullptr,&target),"HDR10 target");ComPtr<ID3D11RenderTargetView> targetView;check(device->CreateRenderTargetView(target.Get(),nullptr,&targetView),"HDR10 RTV");
+        desc.BindFlags=0;desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;check(device->CreateTexture2D(&desc,nullptr,&read),"HDR10 readback");
+        auto* view=targetView.Get();context->OMSetRenderTargets(1,&view,nullptr);D3D11_VIEWPORT viewport{0,0,32,16,0,1};context->RSSetViewports(1,&viewport);
+        auto pqCode=[](double scrgb){const double y=std::clamp(scrgb*80/10000,0.,1.);if(y<1e-7)return 0.;const double p=std::pow(y,.1593017578125);return std::pow((.8359375+18.8515625*p)/(1+18.6875*p),78.84375)*1023;};
+        auto pixels=[&](const Settings& settings,Eye eye){draw.draw(context.Get(),32,16,settings,eye,false,3,0);context->CopyResource(read.Get(),target.Get());D3D11_MAPPED_SUBRESOURCE m{};check(context->Map(read.Get(),0,D3D11_MAP_READ,0,&m),"Read HDR10");
+            std::vector<uint32_t> out(32*16);for(unsigned y=0;y<16;++y)memcpy(&out[y*32],static_cast<const uint8_t*>(m.pData)+y*m.RowPitch,32*4);context->Unmap(read.Get(),0);return out;};
+        draw.pqOutput=true;Settings settings;settings.hdr=true;
+        for(Eye eye:{Eye::Left,Eye::Right}){
+            const auto out=pixels(settings,eye);const float* rgb=values+(eye==Eye::Left?0:4);
+            const double r=.6274040*rgb[0]+.3292820*rgb[1]+.0433136*rgb[2],g=.0690970*rgb[0]+.9195400*rgb[1]+.0113612*rgb[2],b=.0163916*rgb[0]+.0880132*rgb[1]+.8955950*rgb[2];
+            for(uint32_t v:out){const double actual[3]{double(v&1023),double((v>>10)&1023),double((v>>20)&1023)},expected[3]{pqCode(r),pqCode(g),pqCode(b)};
+                for(int c=0;c<3;++c)if(std::abs(actual[c]-expected[c])>1.5)throw std::runtime_error("HDR10 output: wrong PQ/Rec.2020 code value.");}
+        }
+        for(uint32_t v:pixels(settings,Eye::Black))if(v&0x3fffffff)throw std::runtime_error("HDR10 output: black frame is not code value zero.");
+        // The curve must match the ST 2084 reference point: 100 nits encodes to 0.5081.
+        if(std::abs(pqCode(1.25)/1023-.5081)>.001)throw std::runtime_error("HDR10 reference curve is wrong.");
+        Settings sdr=streamViewSettings(settings);const auto stream=pixels(sdr,Eye::Left);
+        // The SDR stream path stays sRGB even with pqOutput set: gray 0.4 of white -> sRGB 170.
+        const uint32_t s0=stream[0];if(std::abs(int((s0>>10)&1023)-int(std::lround((1.055*std::pow(.4/1.,1/2.4)-.055)*1023)))>2)throw std::runtime_error("HDR10 encoding leaked into the SDR stream view.");
+        draw.pqOutput=false;
+    }
+    draw.release();report<<"HDR10 output: PQ/Rec.2020 code values for captured scRGB, black frames at zero, SDR stream view unencoded PASS\n";
+    // The control menu inside the stereo picture: exact menu pixels inside its rectangle in both eye
+    // frames (SDR), the picture elsewhere, nothing in a black frame, and nothing once it is removed.
+    {
+        std::vector<uint32_t> menuPixels(16*8,0xff3060c0u); // RGBA8: r=0xc0,g=0x60,b=0x30
+        D3D11_TEXTURE2D_DESC md{};md.Width=16;md.Height=8;md.MipLevels=md.ArraySize=md.SampleDesc.Count=1;md.Format=DXGI_FORMAT_R8G8B8A8_UNORM;md.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA mdata{menuPixels.data(),16*4,0};ComPtr<ID3D11Texture2D> menuTexture;check(device->CreateTexture2D(&md,&mdata,&menuTexture),"Menu test image");
+        check(device->CreateShaderResourceView(menuTexture.Get(),nullptr,&draw.menuView),"Menu test view");
+        // An 8x4 menu at (8,4) on a 32x16 output, filling half of a 16x8 image in each direction.
+        draw.menuRect[0]=8/32.f;draw.menuRect[1]=4/16.f;draw.menuRect[2]=16/32.f;draw.menuRect[3]=8/16.f;draw.menuTexture[0]=.5f;draw.menuTexture[1]=.5f;
+        D3D11_TEXTURE2D_DESC desc{};desc.Width=32;desc.Height=16;desc.MipLevels=desc.ArraySize=desc.SampleDesc.Count=1;desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;desc.BindFlags=D3D11_BIND_RENDER_TARGET;
+        ComPtr<ID3D11Texture2D> target,read;check(device->CreateTexture2D(&desc,nullptr,&target),"Menu test target");ComPtr<ID3D11RenderTargetView> rtv;check(device->CreateRenderTargetView(target.Get(),nullptr,&rtv),"Menu test RTV");
+        desc.BindFlags=0;desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;check(device->CreateTexture2D(&desc,nullptr,&read),"Menu test readback");
+        auto* view=rtv.Get();context->OMSetRenderTargets(1,&view,nullptr);D3D11_VIEWPORT viewport{0,0,32,16,0,1};context->RSSetViewports(1,&viewport);
+        auto pixels=[&](Eye eye){Settings settings;draw.draw(context.Get(),32,16,settings,eye,false,1,0);context->CopyResource(read.Get(),target.Get());D3D11_MAPPED_SUBRESOURCE m{};check(context->Map(read.Get(),0,D3D11_MAP_READ,0,&m),"Read menu test");
+            std::vector<uint32_t> out(32*16);for(unsigned y=0;y<16;++y)memcpy(&out[y*32],static_cast<const uint8_t*>(m.pData)+y*m.RowPitch,32*4);context->Unmap(read.Get(),0);return out;};
+        for(Eye eye:{Eye::Left,Eye::Right}){const auto out=pixels(eye);
+            for(unsigned y=0;y<16;++y)for(unsigned x=0;x<32;++x){const bool inside=x>=8&&x<16&&y>=4&&y<8;
+                if(inside&&(out[y*32+x]&0xffffff)!=0x3060c0u)throw std::runtime_error("Menu pixels are not the menu image in an eye frame.");
+                if(!inside&&(out[y*32+x]&0xffffff)==0x3060c0u)throw std::runtime_error("Menu drawn outside its rectangle.");}}
+        for(uint32_t v:pixels(Eye::Black))if(v&0xffffff)throw std::runtime_error("Menu lit a black frame.");
+        draw.menuView.Reset();for(uint32_t v:pixels(Eye::Left))if((v&0xffffff)==0x3060c0u)throw std::runtime_error("Menu still drawn after it was removed.");
+    }
+    draw.release();report<<"Control menu inside the stereo picture: exact pixels in both eye frames, only in its rectangle, never in black frames PASS\n";
     return true;
 }
 }

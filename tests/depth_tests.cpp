@@ -34,24 +34,58 @@ int main(){try{
      // Non-finite input: rejected when nothing is finite, ignored otherwise.
      std::vector<float> nan(raw.size(),NAN);DepthNormalizer empty;require(!empty.process(nan.data(),100,50,out),"An all-NaN map is rejected");
      std::vector<float> someNan=raw;someNan[5]=NAN;DepthNormalizer partial;partial.smoothing=0;require(partial.process(someNan.data(),100,50,out)&&out[5]==0&&out[99]>.95f,"A NaN pixel becomes far and the rest normalise");}
-    // Smoothing: a small change is averaged over frames, a large one is followed at once, a cut resets.
-    {DepthNormalizer norm;norm.smoothing=.8f;norm.rangeSmoothing=0;std::vector<float> a(64*64,0.f),out;for(unsigned i=0;i<64*64;i++)a[i]=float(i%64)/63; // a ramp
+    // Smoothing: noise is averaged, isolated spikes are suppressed, and a scene cut resets.
+    {DepthNormalizer norm;norm.smoothing=.8f;norm.stabilizeRange=false;std::vector<float> a(64*64,0.f),out;for(unsigned i=0;i<64*64;i++)a[i]=float(i%64)/63; // a ramp
      norm.process(a.data(),64,64,out);std::vector<float> first=out;
      std::vector<float> b=a;b[10]+=.05f;norm.process(b.data(),64,64,out);
      require(std::abs(out[10]-first[10])<.03f&&out[10]>first[10],"A small change moves the smoothed value only part of the way");
-     std::vector<float> c=a;c[10]=1.f;norm.process(c.data(),64,64,out);require(out[10]>.9f,"A large change is followed at once");
+     std::vector<float> c=a;c[10]=1.f;norm.process(c.data(),64,64,out);require(std::abs(out[10]-first[10])<.03f,"An isolated large spike cannot bypass smoothing");
      std::vector<float> flipped(64*64);for(unsigned i=0;i<64*64;i++)flipped[i]=1-a[i];norm.process(flipped.data(),64,64,out);
      require(norm.cut()&&std::abs(out[0]-1)<.02f&&out[63]<.02f,"A cut takes the new frame whole");
      norm.reset();require(norm.frames()==0,"Reset clears the history");}
+    // Map adjustments are independent of inference and temporal history.
+    {DepthMapProcessor processor;DepthMapSettings m;std::vector<float> input{0,.25f,.5f,.75f,1},out;
+     processor.process(input,5,1,m,out);require(out==input,"Neutral adjustments preserve depth");
+     m.farPoint=.25f;m.nearPoint=.75f;processor.process(input,5,1,m,out);
+     require(out==std::vector<float>({0,0,.5f,1,1}),"Far and near levels expand and clip the selected range");
+     m={};m.contrast=2;processor.process(input,5,1,m,out);
+     require(out==std::vector<float>({0,0,.5f,1,1}),"Contrast expands depth around the midpoint");
+     m={};m.gamma=2;processor.process(input,5,1,m,out);
+     require(out[0]==0&&out[4]==1&&std::abs(out[1]-.5f)<1e-6f,"Gamma shifts middle depths while preserving endpoints");
+     m={};m.invert=true;processor.process(input,5,1,m,out);
+     require(out==std::vector<float>({1,.75f,.5f,.25f,0}),"Inversion swaps near and far");
+     m={};processor.process(input,5,1,m,out);require(out==input,"Reset reproduces the original map without cumulative edits");
+     std::vector<float> flat(81,.5f);m.detail=2;m.detailRadius=8;processor.process(flat,9,9,m,out);
+     for(float v:out)require(std::abs(v-.5f)<1e-6f,"Detail leaves flat surfaces unchanged even at borders");
+     flat[40]=.52f;processor.process(flat,9,9,m,out);
+     require(out[40]>.54f&&out[39]<.5f,"Detail enhances a small local depth feature");
+     for(float v:out)require(std::isfinite(v)&&v>=0&&v<=1,"Detail output stays finite and bounded");
+     processor.process(std::vector<float>{.4f},1,1,m,out);require(std::abs(out[0]-.4f)<1e-5f,"Detail supports maps smaller than its radius");
+     // Levels and gamma preserve ordering when local enhancement is disabled.
+     m={};m.farPoint=.1f;m.nearPoint=.9f;m.contrast=1.3f;m.gamma=.6f;
+     processor.process(input,5,1,m,out);for(size_t i=1;i<out.size();i++)require(out[i]>=out[i-1],"Levels preserve depth ordering");
+    }
     // Screen settings live in the profile.
-    {Settings s;s.screen.separation=.031f;s.screen.convergence=.77f;s.screen.popOut=.25f;s.screen.smoothing=.6f;s.screen.quality=700;s.screen.steps=16;s.screen.depth=false;s.screen.model="D:\\models\\depth anything large.onnx";
+    {Settings s;s.screen.separation=.031f;s.screen.convergence=.77f;s.screen.popOut=.25f;s.screen.smoothing=.6f;s.screen.quality=700;s.screen.steps=16;s.screen.depth=false;s.screen.model="models\\depth anything large.onnx";
      s.screen.depthRate=60;
+     s.screen.map={.12f,.88f,1.4f,.8f,.65f,5,true};
+     s.screen.mapEnabled=true;
      auto file=std::filesystem::temp_directory_path()/"vision-screen-settings-test.ini";saveProfile(file,s);auto l=loadProfile(file);std::filesystem::remove(file);
      require(l.screen.depthRate==60,"The responsive depth rate survives a restart/profile reload");
+     require(l.screen.map==s.screen.map,"All map adjustments survive profile reload");
+     require(!l.screen.mapEnabled,"Saved adjustments require explicit opt-in after reload");
      require(std::abs(l.screen.separation-.031f)<1e-6f&&std::abs(l.screen.convergence-.77f)<1e-6f&&std::abs(l.screen.popOut-.25f)<1e-6f&&std::abs(l.screen.smoothing-.6f)<1e-6f&&l.screen.quality==700&&l.screen.steps==16,"Screen conversion settings round-trip through the profile");
      require(l.screen.model==s.screen.model,"The chosen depth model, spaces included, round-trips through the profile");
      Settings none;saveProfile(file,none);require(loadProfile(file).screen.model.empty(),"No chosen model stays empty");std::filesystem::remove(file);
      require(l.screen.depth&&!l.screen.showDepth,"2D and depth-view toggles are session state, not profile state");
+     {std::ofstream legacy(file);legacy<<"version 12\nwidth 1920\nheight 1080\nrefresh 120\nscreen_quality 924\n";}auto legacy=loadProfile(file);std::filesystem::remove(file);
+     require(legacy.screen.map==DepthMapSettings{},"Old profiles use neutral map adjustments");
+     auto rejectsMap=[&](DepthMapSettings map){Settings invalid;invalid.screen.map=map;try{validate(invalid);return false;}catch(const std::exception&){return true;}};
+     for(float value:{-.1f,1.f,float(NAN)}){DepthMapSettings m;m.farPoint=value;require(rejectsMap(m),"Invalid far points are rejected");}
+     for(float value:{0.f,1.1f,float(NAN)}){DepthMapSettings m;m.nearPoint=value;require(rejectsMap(m),"Invalid near points are rejected");}
+     for(float value:{0.f,4.1f,float(NAN)}){DepthMapSettings m;m.contrast=value;require(rejectsMap(m),"Invalid contrast rejected");m={};m.gamma=value;require(rejectsMap(m),"Invalid gamma rejected");}
+     for(float value:{-.1f,2.1f,float(NAN)}){DepthMapSettings m;m.detail=value;require(rejectsMap(m),"Invalid detail rejected");}
+     for(unsigned value:{0u,9u}){DepthMapSettings m;m.detailRadius=value;require(rejectsMap(m),"Invalid detail radius rejected");}
      Settings bad;bad.screen.separation=.5f;bool threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"Separation beyond 10% of the width is rejected");
      bad=Settings{};bad.screen.quality=5000;threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"A network input larger than the channel is rejected");
      bad=Settings{};bad.screen.convergence=NAN;threw=false;try{validate(bad);}catch(const std::exception&){threw=true;}require(threw,"A non-finite screen plane is rejected");

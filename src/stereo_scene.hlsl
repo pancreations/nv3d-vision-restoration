@@ -1,4 +1,8 @@
-cbuffer Params:register(b0){float4 screen;float4 state;float4 options;float4 source;float4 band;float4 extra;float4 leak0;float4 leak1;float4 capture;};
+cbuffer Params:register(b0){float4 screen;float4 state;float4 options;float4 source;float4 band;float4 extra;float4 leak0;float4 leak1;float4 capture;float4 menu;float4 menuTexture;};
+// The control menu is part of the picture, not a window over it (capture.w = this frame may show it):
+// menu = its rectangle in output UV, menuTexture.xy = the part of menuImage it fills. Drawn identically
+// in both eye frames, so it sits at screen depth; never in a black frame.
+Texture2D menuImage:register(t3);
 Texture2D image:register(t0);SamplerState imageSampler:register(s0);
 Texture2DArray eyeImages:register(t1);
 struct V { float4 pos:SV_POSITION;float2 uv:TEXCOORD0; };
@@ -89,7 +93,7 @@ else if(pattern==7||(pattern>=9&&pattern<=11)){
 }
 else{float x=floor(uv.x*8)/7;c=x;float patch=box(uv,float2(.5,.5),float2(.1,.15));c=lerp(c,options.y/80,patch);c=max(c,eyeLabel(uv,eye));}
 return c;}
-float4 ps(V input):SV_TARGET{
+float4 shade(V input){
 float2 uv=input.uv;int eye=int(state.x);bool preview=state.z>.5;float aspect=screen.x/screen.y;
 if(preview){eye=uv.x<.5?0:1;uv.x=frac(uv.x*2);aspect*=.5;if(options.w>.5)eye=1-eye;}
 if(int(state.y)==8&&(eye!=2||extra.z>.5)){
@@ -101,6 +105,10 @@ if(int(state.y)==8&&(eye!=2||extra.z>.5)){
     if(uv.x<.07&&y>.15&&y<.7)c=eye==0?float3(1,0,0):eye==1?float3(0,1,0):float3(0,0,1);
     if(y>.8)c=int(uv.x*16)==int(code%16)?1:0;
     return float4(state.w>.5?c*2.5:c,1);
+}
+if(capture.w>.5&&!preview&&all(input.uv>=menu.xy)&&all(input.uv<menu.zw)){
+    float3 m=menuImage.SampleLevel(imageSampler,(input.uv-menu.xy)/(menu.zw-menu.xy)*menuTexture.xy,0).rgb;
+    return float4(state.w>.5?linearize(m)*2.5:m,1);
 }
 if(eye==2){
     // Uniform neutral reset is explicit; startup/pause blanking sets extra.z to zero.
@@ -127,6 +135,16 @@ bool nativeHDR=pattern==3&&source.y>.5;
 // LCD black floor (extra.y, fraction of the panel drive): the eye image never asks the liquid
 // crystal for full black; the black frames still do (they returned 0 above), so a bright pixel is
 // pulled down as hard as possible and only has to reach the floor before the shutter opens.
-if(state.w>.5){if(!nativeHDR&&pattern!=4)c*=2.5;if(extra.y>0)c=max(c,pq(float3(extra.y,extra.y,extra.y)));return float4(c,1);}
-if(nativeHDR)c=max(c,0)/max(capture.x,.01);float3 encoded=srgb(saturate(c));if(extra.y>0)encoded=extra.y+encoded*(1-extra.y);return float4(encoded,1);
+// A negative value moves the black point up instead: everything at or below that share of the drive
+// becomes black and the rest is stretched back to the same white, so dark grays get darker.
+if(state.w>.5){if(!nativeHDR&&pattern!=4)c*=2.5;if(extra.y>0)c=max(c,pq(float3(extra.y,extra.y,extra.y)));if(extra.y<0)c=max(c-pq(float3(-extra.y,-extra.y,-extra.y)),0);return float4(c,1);}
+if(nativeHDR)c=max(c,0)/max(capture.x,.01);float3 encoded=srgb(saturate(c));if(extra.y>0)encoded=extra.y+encoded*(1-extra.y);if(extra.y<0)encoded=max(encoded+extra.y,0)/(1+extra.y);return float4(encoded,1);
 }
+// HDR10 output (capture.z): the scRGB result (Rec.709 primaries, 1.0 = 80 nits) is converted to
+// Rec.2020 and PQ-encoded (SMPTE ST 2084) here, once, for every frame kind. Black stays exactly 0.
+float3 hdr10(float3 c){
+    c=mul(float3x3(.6274040,.3292820,.0433136,.0690970,.9195400,.0113612,.0163916,.0880132,.8955950),c);
+    float3 y=saturate(c*(80./10000.));float3 p=pow(y,.1593017578125);
+    return pow((.8359375+18.8515625*p)/(1+18.6875*p),78.84375)*step(1e-7,y);
+}
+float4 ps(V input):SV_TARGET{float4 c=shade(input);if(capture.z>.5)c.rgb=hdr10(c.rgb);return c;}

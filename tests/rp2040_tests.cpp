@@ -66,7 +66,6 @@ void scheduling() {
     check(s.enqueue({1,1,18333,Eye::Right},0)==Result::StaleSequence,"duplicate rejected");
     check(s.enqueue({1,2,18333,Eye::Left},0)==Result::WrongEye,"same eye rejected");
     check(s.enqueue({1,2,11000,Eye::Right},0)==Result::Overlap,"overlapping intervals rejected");
-    check(s.enqueue({1,2,26667,Eye::Right},0)==Result::BadConfig,"missing refresh requires resync");
     check(s.enqueue({1,2,18333,Eye::Right},0)==Result::Ok,"queue right");
     check(s.configure(1,{},0)==Result::NotReady,"configuration cannot change queued output");
     check(s.begin(2,0)==Result::NotReady,"new session requires stop");
@@ -102,6 +101,16 @@ void scheduling() {
         check(batch.advance(t+1500).count==1,"batch close event");
     }
     check(batch.queued()==0,"batch completely drained");
+    Scheduler gaps;start(gaps);
+    check(gaps.enqueue({1,1,10000,Eye::Left},0)==Result::Ok,"gap baseline");
+    check(gaps.enqueue({1,2,22499,Eye::Left},0)==Result::Ok,"half-eye cadence slip uses explicitly requested eye");
+    check(gaps.enqueue({1,3,39165,Eye::Left},0)==Result::Ok,"skipped eye opens do not restart shutters");
+    check(gaps.enqueue({1,4,47498,Eye::Left},0)==Result::WrongEye,"ordinary cadence still rejects duplicate eye");
+    check(gaps.enqueue({1,4,47498,Eye::Right},0)==Result::Ok,"normal cadence resumes after gap");
+    for(auto t:{10000ull,22499ull,39165ull,47498ull}){
+        a=gaps.advance(t);check(!a.forceIdle&&a.count==1&&a.actions[0].scheduledUs==t,"gap emits only requested future open");
+        a=gaps.advance(t+1500);check(!a.forceIdle&&a.count==1&&a.actions[0].kind==ActionKind::Close,"gap retains close deadline");
+    }
     std::cout<<"PASS scheduler faults: missed refresh, late alarm, overlap, stale epoch, stop, timeout, overflow\n";
 }
 void slowerCadences() {

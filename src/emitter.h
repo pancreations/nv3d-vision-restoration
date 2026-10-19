@@ -18,7 +18,7 @@ struct EmitterStatus { EmitterState state=EmitterState::Disconnected;std::string
     // Host-side timing of the eye command: how far from its deadline the USB write started
     // (signed, positive = late), the running mean transfer time, and how many timing-block
     // writes (phase/shutter changes) reached the emitter.
-    double sendErrorLastUs=0,sendErrorMaxUs=0,sendErrorRmsUs=0,meanTransferUs=0;uint64_t timingWrites=0,repeatedCommands=0;
+    double sendErrorLastUs=0,sendErrorMaxUs=0,sendErrorRmsUs=0,meanTransferUs=0;uint64_t timingWrites=0,repeatedCommands=0,clockRelocks=0;
     bool extendedCadence=false,aperture=false,fastCadence=false; double aperturePeriodUs=0,apertureDurationUs=0; };
 class Emitter {
 public:
@@ -28,11 +28,13 @@ public:
     void connect(const UsbDeviceInfo& info,const std::filesystem::path& firmware,bool simulated);
     void disconnect();
     void configure(const Settings& settings);
-    void submit(Eye eye,double deadline,double framePeriodUs=0);
+    // Carry the confirmed presentation-clock revision with the deadline, so
+    // already queued commands retain their original clock until dispatched.
+    void submit(Eye eye,double deadline,double framePeriodUs=0,uint64_t timingRevision=0);
     void suspend();
     EmitterStatus status()const;
 private:
-    struct Command { Eye eye;double deadline;uint64_t generation;double framePeriodUs=0; };
+    struct Command { Eye eye;double deadline;uint64_t generation;double framePeriodUs=0;uint64_t timingRevision=0; };
     mutable std::mutex mutex_;std::condition_variable cv_;std::jthread worker_;
     EmitterStatus status_;Settings settings_;std::vector<Command> pending_;/* FIFO: the presenter queues frames ahead, so several eye commands can wait */uint64_t generation_=0;
     uint64_t deadlineGeneration_=0;double lastDeadline_=0;

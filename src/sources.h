@@ -13,6 +13,7 @@ struct StereoFrame {
     HANDLE sharedHandle=nullptr; // legacy shared handle: not closed with CloseHandle
     unsigned width=0,height=0;
     uint64_t pairId=0;double timestamp=0;
+    double captureAcquiredAt=0,publishedAt=0; // host QPC; capture handling excludes compositor/producer queues
     Packing packing=Packing::SideBySide;Encoding encoding=Encoding::SRGB;
     bool alignmentApplied=false;float sdrWhiteLevel=1;
     float eyeAspect=0; // display width / height of one eye; zero keeps output-area scaling
@@ -21,11 +22,15 @@ struct SourceStatus { std::string message="Built-in calibration patterns";uint64
     // Whole-screen conversion: network input size, last inference time, age of the depth in use, time
     // to draw both eyes, depth maps received, and the helper's own message (model, device or error).
     unsigned netWidth=0,netHeight=0;double depthMs=0,depthAgeMs=0,convertMs=0,depthFps=0;uint64_t depthFrames=0;std::string depthMessage;
-    int64_t mediaTimeMs=0,mediaLengthMs=0;bool mediaPaused=false,mediaSeekable=false; };
-enum class SourceKind { Patterns, Image, Window, Screen, Vlc, DirectEyes };
+    std::string captureBackend;
+    int64_t mediaTimeMs=0,mediaLengthMs=0;bool mediaPaused=false,mediaSeekable=false;
+    bool requiresElevation=false; }; // Wibble/SteamVR was launched with higher Windows permissions.
+enum class SourceKind { Patterns, Image, Window, Screen, Vlc, DirectEyes, WibbleWobble, Default, VrTo3D };
+inline bool isWindowCapture(SourceKind kind){return kind==SourceKind::Window||kind==SourceKind::VrTo3D;}
 enum class SbsFormat { Half, Full };
 struct SourceConfig { SourceKind kind=SourceKind::Patterns;std::filesystem::path file;HWND window=nullptr;Packing packing=Packing::SideBySide;Encoding encoding=Encoding::SRGB;bool captureHDR=true;float sdrWhiteLevel=1;
-    SbsFormat sbsFormat=SbsFormat::Half;
+    CaptureMethod captureMethod=CaptureMethod::DesktopDuplication;
+    SbsFormat sbsFormat=SbsFormat::Half; // VrTo3D also uses Half/Full for top/bottom.
     // Screen: the display to convert, the conversion settings, the depth helper and its model.
     HMONITOR monitor=nullptr;ScreenSettings screen;std::filesystem::path depthHelper,depthModel,depthLog;
     std::filesystem::path vlcDirectory;bool mediaMute=false;
@@ -34,6 +39,7 @@ class StereoSource {
     mutable std::mutex mutex_;std::shared_ptr<StereoFrame> latest_;SourceStatus status_;std::jthread thread_;ScreenSettings screen_;uint64_t screenRevision_=0;
     bool mediaPaused_=false;int mediaVolume_=100;int64_t mediaSeekMs_=-1;
     std::deque<std::shared_ptr<StereoFrame>> directQueue_;
+    double captureAcquiredAt_=0; // accessed only by the source worker
     std::atomic<bool> directCovering_{false};std::atomic<uint32_t> directPairPeriodUs_{0};
 public:
     ~StereoSource(){stop();}
@@ -51,10 +57,10 @@ public:
     // stops presenting underneath it) and how often the output can show a new pair.
     void announceDirect(bool covering,uint32_t pairPeriodUs){directCovering_=covering;directPairPeriodUs_=pairPeriodUs;}
 private:
-    using Publish=std::function<void(ID3D11Texture2D*,unsigned,unsigned,double,Encoding,unsigned,unsigned)>;
+    using Publish=std::function<void(ID3D11Texture2D*,unsigned,unsigned,double,Encoding,unsigned,unsigned,bool)>;
     void run(std::stop_token stop,SourceConfig config,LUID adapter);
     void runScreen(std::stop_token stop,const SourceConfig& config,LUID adapter,ID3D11Device* device,ID3D11DeviceContext* context,const Publish& publish); // screen_source.cpp
     void runVlc(std::stop_token stop,const SourceConfig& config,ID3D11Device* device,ID3D11DeviceContext* context,const Publish& publish);
 };
-std::vector<std::pair<HWND,std::string>> captureWindows(HWND exclude);
+std::vector<std::pair<HWND,std::string>> captureWindows(HWND exclude,HWND selected=nullptr);
 }

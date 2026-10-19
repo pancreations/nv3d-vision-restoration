@@ -1,5 +1,11 @@
 # Implementation and validation status
 
+## Alpha 0.3.6 release, 2026-10-19
+
+- GPU contention fixed: the presenter's process now requires the REALTIME GPU scheduling class. Under a Cycles OptiX render, HIGH let presenter work wait up to 57 ms (past the 25 ms flip queue, so black slots reached an eye); REALTIME kept it near 1 ms (`experiments/gpu-contention`, [PRESENTATION-SYNC.md](PRESENTATION-SYNC.md)). User-confirmed through the glasses while orbiting a Cycles viewport captured through window capture.
+- NVIDIA emitter clock-change recovery ([SYNC-RECOVERY-2026-10-18.md](SYNC-RECOVERY-2026-10-18.md)), queue refill reservation, fullscreen menu inside the stereo picture, bipolar black level, AI depth-search resolution.
+- Documentation rewritten for end users (README, USAGE, quick start, project page, EMITTER); developer material moved to [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## Experimental v0.2.0 release, 2026-09-26
 
 Includes continuous presentation-clock recovery, a refresh-dependent presentation queue, duplicate emitter-command rejection, fullscreen window ordering/input fixes, steady single-eye recording output, and consistent black-frame controls. See [v0.2.0 release notes](RELEASE-v0.2.0.md) for validation and limitations.

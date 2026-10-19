@@ -18,5 +18,6 @@ bool drawLcdObservations(LcdCalibrationUi&,Settings&,double hz,const std::filesy
 bool tickLcdCalibration(LcdCalibrationUi&,Settings&,double hz,double now,bool running);
 bool drawLcdCalibration(LcdCalibrationUi&,Settings&,const Settings& active,double hz,bool running,float dpi,const std::filesystem::path& reports,double now);
 bool drawImageControls(Settings&,bool hdrAvailable,bool aiDesktop=false);
+bool drawDepthMapControls(ScreenSettings&);
 bool drawTimingControls(Settings&,double phaseMin,double phaseMax,double shutterMax,bool& fine);
 }

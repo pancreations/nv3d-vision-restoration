@@ -88,7 +88,7 @@ function Assert-ReleaseContents([string]$Stage) {
     }
 
     $rootPattern = [Regex]::Escape($projectRoot)
-    $textFiles = Get-ChildItem -LiteralPath $Stage -Recurse -File | Where-Object { $_.Extension -in @('.txt', '.cmd', '.html', '.ini', '.json', '.ps1') }
+    $textFiles = Get-ChildItem -LiteralPath $Stage -Recurse -File | Where-Object { $_.Extension -in @('.txt', '.md', '.cmd', '.html', '.ini', '.json', '.ps1') }
     foreach ($file in $textFiles) {
         $text = Get-Content -LiteralPath $file.FullName -Raw
         if ($text -match $rootPattern -or $text -match '(?i)[A-Z]:\\Users\\[^\\]+') {
@@ -179,7 +179,7 @@ New-Item -ItemType Directory -Path (Join-Path $coreStage 'models') -Force | Out-
 foreach ($name in @(
     'VisionRestoration.exe', 'vision_firmware.exe', 'vision_stereo_setup.exe',
     'vision_usb_recover.exe', 'vision_winusb_installer.exe', 'vision_rp2040_probe.exe', 'VisionDepth.exe',
-    'libusb-1.0.dll', 'onnxruntime.dll', 'DirectML.dll'
+    'libusb-1.0.dll', 'onnxruntime.dll', 'DirectML.dll', 'openvr_api.dll'
 )) {
     Copy-Required (Join-Path $binRoot $name) (Join-Path $coreStage $name)
 }
@@ -192,7 +192,24 @@ foreach ($architecture in @('x86', 'x64')) {
 Copy-Required (Join-Path $projectRoot 'build/rp2040/VisionEmitter.uf2') (Join-Path $coreStage 'firmware/VisionEmitter.uf2')
 Copy-Required (Join-Path $projectRoot 'tools/Start Vision Restoration.cmd') (Join-Path $coreStage 'Start Vision Restoration.cmd')
 Copy-Required (Join-Path $projectRoot 'tools/Start Vision Restoration.cmd') (Join-Path $coreStage 'Launch.cmd')
-Copy-Required (Join-Path $projectRoot 'README.md') (Join-Path $coreStage 'README.md')
+Copy-Required (Join-Path $projectRoot 'tools/Launch-VRto3D-Portable.cmd') (Join-Path $coreStage 'Launch-VRto3D.cmd')
+Copy-Required (Join-Path $projectRoot 'tools/Launch-WibbleWobble-Portable.cmd') (Join-Path $coreStage 'Launch-WibbleWobble.cmd')
+# Preserve documentation paths so README and usage links also work offline.
+# Keep this explicit: private notices and local experiments are not release docs.
+foreach ($document in @(
+    'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'runtime/README.md', 'firmware/rp2040/README.md',
+    'docs/USAGE.md', 'docs/VRTO3D.md', 'docs/WIBBLE-WOBBLE.md', 'docs/EMITTER.md',
+    'docs/RP2040.md', 'docs/RP2040-PROTOCOL.md', 'docs/RP2040-LCD-TRIAL.md',
+    'docs/TIMING-CALIBRATION.md', 'docs/FULLSCREEN-120HZ.md', 'docs/LCD-CALIBRATION.md',
+    'docs/PANEL-EXPERIMENTS.md', 'docs/HISENSE-U6-BFI.md', 'docs/LIGHTBOOST-LCD.md',
+    'docs/EMITTER-TIMING-FIX.md', 'docs/EMITTER-STABILITY-2026-10-01.md', 'docs/PRESENTATION-SYNC.md',
+    'docs/STEREO-COMPATIBILITY.md', 'docs/DIRECT-EYES.md', 'docs/GPU-LOAD-FLASHING.md',
+    'docs/SOURCES.md', 'docs/STATUS.md', 'docs/RELEASE-v0.1.0.md', 'docs/RELEASE-v0.1.1.md',
+    'docs/RELEASE-v0.2.0.md', 'docs/RELEASE-v0.3.0.md',
+    'docs/SYNC-RECOVERY-2026-10-18.md', 'docs/DEVELOPMENT.md', "docs/RELEASE-v$version.md"
+)) {
+    Copy-Required (Join-Path $projectRoot $document) (Join-Path $coreStage $document)
+}
 Copy-Required (Join-Path $projectRoot "docs/RELEASE-v$version.md") (Join-Path $coreStage 'Release Notes.md')
 Copy-Required (Join-Path $projectRoot 'tools/Prepare NVIDIA Firmware.cmd') (Join-Path $coreStage 'Prepare NVIDIA Firmware.cmd')
 Copy-Required (Join-Path $projectRoot 'tools/Prepare NVIDIA Firmware.ps1') (Join-Path $coreStage 'Prepare NVIDIA Firmware.ps1')
@@ -211,6 +228,7 @@ Copy-License (Join-Path $projectRoot 'third_party/imgui-1.91.9b/LICENSE.txt') $c
 Copy-License (Join-Path $projectRoot 'third_party/libusb-1.0.30/COPYING') $coreStage 'libusb-LGPL-2.1.txt'
 Copy-License (Join-Path $projectRoot 'third_party/libwdi/COPYING-LGPL') $coreStage 'libwdi-LGPL-3.0.txt'
 Copy-License (Join-Path $projectRoot 'third_party/minhook-1.3.4/LICENSE.txt') $coreStage 'MinHook-BSD-2-Clause.txt'
+Copy-License (Join-Path $projectRoot 'third_party/openvr/LICENSE') $coreStage 'OpenVR-BSD-3-Clause.txt'
 Copy-License (Join-Path $binRoot 'runtime/ReShade-LICENSE.md') $coreStage 'ReShade-BSD-3-Clause.txt'
 Copy-License (Join-Path $projectRoot 'third_party/pico-sdk-2.2.0/LICENSE.TXT') $coreStage 'Pico-SDK-BSD-3-Clause.txt'
 Copy-License (Join-Path $projectRoot 'third_party/tinyusb-86ad6e56c1700e85f1c5678607a762cfe3aa2f47/LICENSE') $coreStage 'TinyUSB-MIT.txt'

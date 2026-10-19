@@ -26,6 +26,7 @@ int main(){try{
     ScreenSettings s;s.separation=.02f;s.convergence=.85f;s.popOut=.5f;s.depth=true;
     std::cout<<"Copy without depth: "<<time(s,false)<<" ms\n";
     for(unsigned steps:{8u,16u,24u,32u}){s.steps=steps;time(s,true);time(s,true);double sum=0;for(int i=0;i<8;i++)sum+=time(s,true);std::cout<<"Steps "<<steps<<": "<<sum/8<<" ms per pair (both eyes, 3840x2160 each)\n";}
-    s.steps=24;s.separation=.05f;std::cout<<"Steps 24 at 5% separation: "<<time(s,true)<<" ms\n";
+    s.steps=24;for(float scale:{1.f,.75f,.5f,.25f}){s.depthScale=scale;time(s,true);time(s,true);double sum=0;for(int i=0;i<8;i++)sum+=time(s,true);std::cout<<"Steps 24, depth search at "<<scale*100<<"%: "<<sum/8<<" ms per pair\n";}s.depthScale=1;
+    s.separation=.05f;std::cout<<"Steps 24 at 5% separation: "<<time(s,true)<<" ms\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}

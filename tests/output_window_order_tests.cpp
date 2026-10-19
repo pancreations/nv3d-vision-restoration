@@ -43,11 +43,31 @@ int main(){
         unsigned before=positionChanges;
         for(int i=0;i<100;++i)require(order.maintain(output,controls,100)==OutputWindowOrder::Result::Unchanged,"Stable stack was reordered");
         require(positionChanges==before&&above(notification,output)&&above(otherMonitor,output),"Notifications or another monitor disturbed");
+        // Real applications also render through DirectComposition. This flag
+        // alone must never exempt a fullscreen competitor from order repair.
+        HWND compositionHost=make(WS_EX_TOPMOST|WS_EX_NOREDIRECTIONBITMAP|WS_EX_TOOLWINDOW,0,0,800,600);
+        require(above(compositionHost,output),"Composition host fixture did not overlap output");
+        OutputWindowOrder directCompositionOrder;
+        require(directCompositionOrder.maintain(output,controls,150,compositionHost)==OutputWindowOrder::Result::Restored&&above(output,compositionHost),"Real DirectComposition window stayed above stereo");
+        before=positionChanges;
+        for(int i=0;i<100;++i)require(directCompositionOrder.maintain(output,controls,150,compositionHost)==OutputWindowOrder::Result::Unchanged,"Repaired DirectComposition window caused topmost churn");
+        require(positionChanges==before&&directCompositionOrder.repairs()==1,"DirectComposition recovery kept reordering output");
+        // A real opaque fullscreen window must still be restored below stereo.
         raise(app);const HWND foreground=GetForegroundWindow();
         require(above(app,output),"Fixture did not cover output");
         require(order.maintain(output,controls,200)==OutputWindowOrder::Result::Restored,"Fullscreen takeover not repaired");
         require(above(controls,output)&&above(output,app),"Controls/output/app stack incorrect");
         require(GetForegroundWindow()==foreground,"Repair stole input focus");
+        // The menu drawn inside the output: its input window goes directly beneath the output, above
+        // the game, and stays there - it must never cover the stereo output.
+        {OutputWindowOrder beneath;
+         require(beneath.maintain(output,controls,250,nullptr,nullptr,true)==OutputWindowOrder::Result::Restored,"Menu window not moved beneath the output");
+         require(above(output,controls)&&above(controls,app)&&GetWindow(output,GW_HWNDNEXT)==controls,"Menu window is not directly beneath the output");
+         before=positionChanges;
+         for(int i=0;i<100;++i)require(beneath.maintain(output,controls,260,nullptr,nullptr,true)==OutputWindowOrder::Result::Unchanged,"Menu window beneath the output was reordered");
+         require(positionChanges==before,"Menu window beneath the output caused churn");
+         raise(controls);require(beneath.maintain(output,controls,270,nullptr,nullptr,true)==OutputWindowOrder::Result::Restored&&above(output,controls),"Menu window raised over the output was not put back beneath it");
+         require(order.maintain(output,controls,280)==OutputWindowOrder::Result::Restored&&above(controls,output),"Window menu mode no longer restores controls over the output");}
         BYTE alpha=0;DWORD key=0,flags=0;
         require(GetLayeredWindowAttributes(output,&key,&alpha,&flags)&&alpha==255&&flags==LWA_ALPHA&&GetWindowLongPtrW(output,GWL_EXSTYLE)==ex,"Repair changed opacity or input passthrough");
         require(!GetWindow(output,GW_OWNER)&&!GetWindow(app,GW_OWNER),"Repair attached windows across applications");
@@ -102,6 +122,11 @@ int main(){
         before=positionChanges;
         for(int i=0;i<100;++i)require(order.maintain(output,nullptr,7100,app,mirror)==OutputWindowOrder::Result::Unchanged,"Stable stream stack kept reordering");
         require(positionChanges==before,"Stream mirror caused topmost churn");
+        raise(compositionHost);const auto repairsBeforeHost=order.repairs();
+        require(order.maintain(output,nullptr,7150,compositionHost,mirror)==OutputWindowOrder::Result::Restored&&above(output,mirror)&&above(mirror,compositionHost),"DirectComposition window covered stereo or its mirror");
+        before=positionChanges;
+        for(int i=0;i<100;++i)require(order.maintain(output,nullptr,7150,compositionHost,mirror)==OutputWindowOrder::Result::Unchanged,"Repaired DirectComposition stream stack kept reordering");
+        require(positionChanges==before&&order.repairs()==repairsBeforeHost+1,"DirectComposition window caused stream topmost churn");
         // The game comes above both windows; both outputs must be restored.
         raise(app);
         require(order.maintain(output,nullptr,7200,app,mirror)==OutputWindowOrder::Result::Restored&&above(output,mirror)&&above(mirror,app),"Game activation covered the stream after stereo recovery");

@@ -127,7 +127,7 @@ void Emitter::configure(const Settings& s){validate(s);std::lock_guard lock(mute
     }
     settings_=s;
 }
-void Emitter::submit(Eye eye,double deadline,double framePeriodUs){
+void Emitter::submit(Eye eye,double deadline,double framePeriodUs,uint64_t timingRevision){
     if(eye==Eye::Black||!std::isfinite(deadline))return;
     std::lock_guard lock(mutex_);
     if(status_.state!=EmitterState::Ready&&status_.state!=EmitterState::Running&&status_.state!=EmitterState::Simulated)return;
@@ -141,9 +141,9 @@ void Emitter::submit(Eye eye,double deadline,double framePeriodUs){
     if(lastDeadline_&&deadline-lastDeadline_<minimumSpacing){++status_.repeatedCommands;return;}
     lastDeadline_=deadline;
     if(pending_.size()>=emitterCommandQueueCapacity){pending_.erase(pending_.begin());status_.late++;}
-    pending_.push_back(Command{eye,deadline,generation_,framePeriodUs});suspended_=false;cv_.notify_one();
+    pending_.push_back(Command{eye,deadline,generation_,framePeriodUs,timingRevision});suspended_=false;cv_.notify_one();
 }
-void Emitter::suspend(){suspended_=true;std::lock_guard lock(mutex_);pending_.clear();++generation_;cv_.notify_one();}
+void Emitter::suspend(){std::lock_guard lock(mutex_);suspended_=true;pending_.clear();++generation_;cv_.notify_one();}
 void Emitter::transfer(std::span<const uint8_t> bytes,uint8_t endpoint,std::stop_token stop){
     struct Completion{bool done=false;libusb_transfer_status status{};int actual=0;};Completion done;
     auto* t=libusb_alloc_transfer(0);if(!t)throw std::runtime_error("USB allocation failed.");
@@ -157,6 +157,7 @@ void Emitter::transfer(std::span<const uint8_t> bytes,uint8_t endpoint,std::stop
 void Emitter::run(std::stop_token stop,UsbDeviceInfo info,std::filesystem::path firmware,bool simulated){
     if(info.rp2040&&!simulated){runRp2040(stop,info);return;}
     DWORD task=0;HANDLE mmcss=AvSetMmThreadCharacteristicsW(L"Pro Audio",&task);
+    if(mmcss)AvSetMmThreadPriority(mmcss,AVRT_PRIORITY_CRITICAL);
     HANDLE timer=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);if(!timer)timer=CreateWaitableTimerExW(nullptr,nullptr,0,TIMER_ALL_ACCESS);
     bool initialized=false;
     try{
@@ -220,6 +221,7 @@ void Emitter::run(std::stop_token stop,UsbDeviceInfo info,std::filesystem::path 
         }
         setStatus(simulated?EmitterState::Simulated:EmitterState::Ready,simulated?"SIMULATED emitter - no glasses connected":"USB ready - optical synchronization unverified");
         double lastDuration=-1,lastPhase=-1,lastRate=-1;bool wasSuspended=true,lastPerEye=false,lastSwap=false;double sendErrorSq_=0;
+        double lastSentDeadline=0;Eye lastSentEye=Eye::Black;uint64_t lastTimingRevision=0,lastSentGeneration=0;
         auto rejectLate=[&]{
             // A late eye command is dropped, never sent into the wrong image. The firmware's shutters
             // free-run through that one period and the next on-time command corrects them. Disabling
@@ -232,7 +234,7 @@ void Emitter::run(std::stop_token stop,UsbDeviceInfo info,std::filesystem::path 
             std::optional<Command> command;Settings settings;
             {std::unique_lock lock(mutex_);cv_.wait_for(lock,std::chrono::milliseconds(20),[&]{return stop.stop_requested() || !pending_.empty() || (!wasSuspended && suspended_.load());});
                 if(stop.stop_requested())break;if(!pending_.empty()){command=pending_.front();pending_.erase(pending_.begin());}settings=settings_;}
-            if(suspended_){if(!wasSuspended && initialized && !simulated){std::array<uint8_t,5> disable{1,0x1b,1,0,0};transfer(disable,2,stop);initialized=false;}wasSuspended=true;continue;}
+            if(suspended_){if(!wasSuspended && initialized && !simulated){std::array<uint8_t,5> disable{1,0x1b,1,0,0};transfer(disable,2,stop);initialized=false;}wasSuspended=true;lastSentDeadline=0;lastSentEye=Eye::Black;continue;}
             wasSuspended=false;if(!command)continue;
             constexpr double maximumLateness=.0005;
             if(qpc()-command->deadline>maximumLateness){rejectLate();continue;}
@@ -257,7 +259,16 @@ void Emitter::run(std::stop_token stop,UsbDeviceInfo info,std::filesystem::path 
             // there is still lead time, then wait for the predicted vblank before EP1.
             // Sending the 28-byte timing block at the deadline made slider movement delay
             // the eye packet and produced an apparent range-dependent loss of sync.
-            if(!simulated && (duration!=lastDuration || phase!=lastPhase || hz!=lastRate || perEye!=lastPerEye || settings.swapEyes!=lastSwap || !initialized)){
+            // Locked firmware takes twenty mismatched eye nudges to recover.
+            // Reacquire after a missed/repeated eye without toggling enable.
+            // A confirmed display-clock replacement can shift phase by less
+            // than half an eye period and leave eye parity intact. Cadence
+            // detection alone misses it, leaving firmware to slew by only
+            // ~5 us per command. Reacquire at the first new-clock command,
+            // without disabling output or invalidating older queued deadlines.
+            const bool clockChanged=lastSentDeadline>0&&command->generation==lastSentGeneration&&command->timingRevision!=lastTimingRevision;
+            const bool cadenceChanged=emitterCadenceDiscontinuous(lastSentEye,lastSentDeadline,command->eye,command->deadline,1/hz);
+            if(!simulated && (clockChanged || cadenceChanged || duration!=lastDuration || phase!=lastPhase || hz!=lastRate || perEye!=lastPerEye || settings.swapEyes!=lastSwap || !initialized)){
                 auto packet=timingPacket(hz,phase,duration);transfer(packet,2,stop);lastDuration=duration;lastPhase=phase;lastRate=hz;{std::lock_guard lock(mutex_);status_.timingWrites++;}
                 if(!initialized){
                     std::array<uint8_t,6> counter{1,0x1c,2,0,2,0};transfer(counter,2,stop);
@@ -269,11 +280,12 @@ void Emitter::run(std::stop_token stop,UsbDeviceInfo info,std::filesystem::path 
             // The emitter's X timer is the single source of NVIDIA phase.
             // High-resolution wait: Sleep(1) can overshoot by a whole scheduler tick (up to 15.6 ms),
             // which dropped ~30% of predictive triggers. Wait on a 100 ns waitable timer until ~0.7 ms
-            // before the deadline, then spin.
+            // before the deadline, then spin. A 0.7 ms reserve still produced
+            // late commands on hardware; reserve 2 ms against scheduler wakes.
             while(qpc()<command->deadline && !stop.stop_requested() && !suspended_){
                 double remaining=command->deadline-qpc();
                 if(perEye&&!wroteEye&&remaining<0.0006){writeEyeTiming();continue;}
-                if(remaining>0.0012 && timer){LARGE_INTEGER due;due.QuadPart=-LONGLONG((remaining-0.0007)*1e7);if(SetWaitableTimer(timer,&due,0,nullptr,nullptr,FALSE))WaitForSingleObject(timer,10);else Sleep(0);}
+                if(remaining>0.0025 && timer){LARGE_INTEGER due;due.QuadPart=-LONGLONG((remaining-0.002)*1e7);if(SetWaitableTimer(timer,&due,0,nullptr,nullptr,FALSE))WaitForSingleObject(timer,10);else Sleep(0);}
                 else YieldProcessor();
             }
             {std::lock_guard lock(mutex_);if(command->generation!=generation_ || suspended_)continue;}
@@ -287,7 +299,11 @@ void Emitter::run(std::stop_token stop,UsbDeviceInfo info,std::filesystem::path 
                 if(qpc()-command->deadline>maximumLateness){rejectLate();continue;}
                 transfer(eyePacket(command->eye,hz,phase),1,stop);
             }
+            // Only a dispatched command consumes the revision. A rejected
+            // duplicate or late command must not swallow clock recovery.
+            lastSentDeadline=command->deadline;lastSentEye=command->eye;lastTimingRevision=command->timingRevision;lastSentGeneration=command->generation;
             {std::lock_guard lock(mutex_);status_.commands++;status_.lastTransferUs=(qpc()-start)*1e6;status_.maxTransferUs=std::max(status_.maxTransferUs,status_.lastTransferUs);status_.state=simulated?EmitterState::Simulated:EmitterState::Running;
+                if(clockChanged)++status_.clockRelocks;
                 // Command timing error: the write started this far after (positive) or before the
                 // predicted vblank. This is host scheduling jitter that the emitter's phase lock sees.
                 double error=(start-command->deadline)*1e6;status_.sendErrorLastUs=error;status_.sendErrorMaxUs=std::max(status_.sendErrorMaxUs,std::abs(error));

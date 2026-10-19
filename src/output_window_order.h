@@ -1,4 +1,5 @@
 #pragma once
+#include "window_occlusion.h"
 #include <windows.h>
 #include <dwmapi.h>
 #include <cstdint>
@@ -27,7 +28,9 @@ public:
     void reset(){*this=OutputWindowOrder{};}
     uint64_t repairs()const{return repairs_;}
 
-    Result maintain(HWND output,HWND controls,ULONGLONG now=GetTickCount64(),HWND foreground=GetForegroundWindow(),HWND mirror=nullptr){
+    // controlsBeneath: the controls are drawn inside the output and their window must lie directly
+    // beneath it (input only), never over it.
+    Result maintain(HWND output,HWND controls,ULONGLONG now=GetTickCount64(),HWND foreground=GetForegroundWindow(),HWND mirror=nullptr,bool controlsBeneath=false){
         (void)now;
         if(!IsWindow(output)||!IsWindowVisible(output)||IsIconic(output)||
            (GetWindowLongPtrW(output,GWL_STYLE)&WS_CHILD))return Result::Unchanged;
@@ -39,6 +42,9 @@ public:
         const auto competes=[&](HWND above){
             if(above==output||above==mirror||above==controls||(controls&&GetAncestor(above,GA_ROOTOWNER)==controls)||
                !IsWindowVisible(above)||IsIconic(above))return false;
+            // Ignore only Explorer's inactive task-switching host. Ordinary
+            // DirectComposition windows can contain opaque application pixels.
+            if(isInactiveShellCompositionHost(above))return false;
             DWORD cloaked=0;
             if(SUCCEEDED(DwmGetWindowAttribute(above,DWMWA_CLOAKED,&cloaked,sizeof(cloaked)))&&cloaked)return false;
             RECT rect{},overlap{};
@@ -64,11 +70,10 @@ public:
         }
         bool raiseControls=false;
         if(controls&&IsWindowVisible(controls)&&!IsIconic(controls)){
-            raiseControls=raiseOutput||!(GetWindowLongPtrW(controls,GWL_EXSTYLE)&WS_EX_TOPMOST);
-            if(!raiseControls){
-                for(HWND above=GetWindow(controls,GW_HWNDPREV);above;above=GetWindow(above,GW_HWNDPREV))
-                    if(above==output){raiseControls=true;break;}
-            }
+            bool outputAbove=false;
+            for(HWND above=GetWindow(controls,GW_HWNDPREV);above;above=GetWindow(above,GW_HWNDPREV))
+                if(above==output){outputAbove=true;break;}
+            raiseControls=raiseOutput||!(GetWindowLongPtrW(controls,GWL_EXSTYLE)&WS_EX_TOPMOST)||(controlsBeneath?!outputAbove:outputAbove);
         }
         if(!raiseOutput&&!raiseControls&&!raiseMirror)return Result::Unchanged;
         const bool repairCompetition=raiseOutput||(raiseMirror&&blocker);
@@ -76,7 +81,7 @@ public:
         HDWP changes=BeginDeferWindowPos(3);
         if(raiseOutput&&changes)changes=DeferWindowPos(changes,output,HWND_TOPMOST,0,0,0,0,flags);
         if(raiseMirror&&changes)changes=DeferWindowPos(changes,mirror,output,0,0,0,0,flags);
-        if(raiseControls&&changes)changes=DeferWindowPos(changes,controls,HWND_TOPMOST,0,0,0,0,flags);
+        if(raiseControls&&changes)changes=DeferWindowPos(changes,controls,controlsBeneath?output:HWND_TOPMOST,0,0,0,0,flags);
         if(!changes||!EndDeferWindowPos(changes))return Result::Failed;
         if(repairCompetition)++repairs_;
         return Result::Restored;
