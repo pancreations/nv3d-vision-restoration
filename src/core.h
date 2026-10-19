@@ -78,6 +78,8 @@ struct ScreenSettings {
     bool showDepth=false;    // diagnostic: the nearness map instead of the picture (session state)
 };
 enum class CaptureMethod { DesktopDuplication, WindowsGraphicsCapture };
+// Highest bright-area limit a user can choose (share of white): the level the G80SD held cleanly with
+// black frame insertion on 2026-10-19. The limit can be lowered from here, never raised past it.
 constexpr float maxBrightLimit = .65f;
 struct Settings {
     CaptureMethod captureMethod=CaptureMethod::DesktopDuplication; // whole-screen AI conversion
@@ -96,11 +98,9 @@ struct Settings {
     // fewer refreshes, so the picture is dimmer; this spends the display's remaining headroom on
     // it. Values above 1 clip to white in SDR and reach for the panel's peak in HDR.
     float imageGain = 1;
-    // Highest average picture level (share of SDR white) the eye images may reach. With black frames
-    // between the eyes, a mostly-white picture swings the OLED's power between full and none at the
-    // eye rate, and the panel dims it abruptly; above this level the presenter eases the picture back
-    // smoothly first. Fixed at maxBrightLimit, the highest level the G80SD held cleanly (2026-10-19).
-    // Not a user setting; 1 (no limit) is used only for the 2D stream view.
+    // Bright-area limit: the highest mean panel load (mean of linear R, G, B as a share of white) an eye
+    // frame may reach. Above it, only the brightest areas are held to a ceiling (see DrawState); darker
+    // areas keep their level. 20 % to maxBrightLimit; 1 (no limit) is used only for the 2D stream view.
     float brightLimit = maxBrightLimit;
     // Right eye window offset relative to the left eye (microseconds). Applied through a per-frame
     // X/Y register write on the NVIDIA emitter, so each eye gets its own delay and duration.

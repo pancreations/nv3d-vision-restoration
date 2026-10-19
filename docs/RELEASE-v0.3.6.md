@@ -12,7 +12,7 @@ This applies to every source, not just Blender. If Windows ever refuses realtime
 
 ### Bright scenes keep their highlights
 
-Raising **Image brightness** used to flatten everything near white into one solid white, so a bright sky lost its gradient and mostly white scenes looked muted. Highlights now roll smoothly into white while shadows and midtones keep the full boost. Mostly white pictures (snow, a bright sky, a white page) are now eased back gently and automatically, instead of the display dimming them abruptly on its own.
+Raising **Image brightness** used to flatten everything near white into one solid white, so a bright sky lost its gradient. Highlights now roll smoothly into white while shadows and midtones keep the full boost. A new **Bright scene limit** (Tuning tab, under Image brightness) gently rescales only the brightest large areas, such as a sky or a white page, keeping their gradients and their order; darker areas are untouched. It starts at its maximum and can be lowered.
 
 ### Other improvements
 
@@ -42,7 +42,7 @@ Not included, as before: NVIDIA's emitter firmware, the AI depth models and game
 
 ## Validation
 
-- Release build with all 26 automated test suites passing, including GPU rendering (with new highlight roll-off and bright-scene checks), capture, emitter clock recovery and window-order tests.
+- Release build with all 26 automated test suites passing, including GPU rendering (with a new highlight roll-off check), capture, emitter clock recovery and window-order tests.
 - Public ZIP checked after extraction: 95 files, internal hashes verified, GPU and UI smoke tests passed from the extracted copy.
 - GPU-load fix measured with a Cycles OptiX render on an RTX 5070 Ti (worst wait 57 ms before, 1.4 ms after) and confirmed through the glasses on a 240 Hz OLED with black frame insertion.
 

@@ -31,8 +31,8 @@ struct RenderStatus {
     uint64_t presents=0,misses=0,resyncs=0,sourcePair=0;double elapsed=0,measuredHz=0,lastResyncSec=-1;
     uint64_t blackOnImage=0,clockReacquires=0;
     uint64_t queueRefillCorrections=0;
-    // Bright-scene limit: the last measured average picture level (share of SDR white) and the scale applied.
-    float sceneLevel=0,sceneScale=1;
+    // Bright-area limit: the measured mean panel load (share of white) and the compression applied (0 = none).
+    float sceneLevel=0,sceneCompression=0;
     uint64_t clockOutliers=0,clockCorrections=0,statsDisjoints=0;
     double lastIntervalMs=0,maxIntervalMs=0;std::vector<double> intervals;unsigned leadBins[6]{};bool composed=false;uint64_t modeChanges=0; // trigger lead time ms: <0, 0-2, 2-4, 4-6, 6-8, >8
     // Frame jitter: scatter of the display's vblank timestamps around the fitted refresh clock,

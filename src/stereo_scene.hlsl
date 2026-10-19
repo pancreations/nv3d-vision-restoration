@@ -3,6 +3,9 @@ cbuffer Params:register(b0){float4 screen;float4 state;float4 options;float4 sou
 // menu = its rectangle in output UV, menuTexture.xy = the part of menuImage it fills. Drawn identically
 // in both eye frames, so it sits at screen depth; never in a black frame.
 Texture2D menuImage:register(t3);
+// Bright-area map (t2): the current pair's picture averaged over a 16x9 grid of screen cells, in linear
+// SDR-white units, before any limit. Sampled bilinearly, so a cell's brightness blends into its neighbours.
+Texture2D areaMap:register(t2);
 Texture2D image:register(t0);SamplerState imageSampler:register(s0);
 Texture2DArray eyeImages:register(t1);
 struct V { float4 pos:SV_POSITION;float2 uv:TEXCOORD0; };
@@ -143,12 +146,17 @@ bool nativeHDR=pattern==3&&source.y>.5;
 bool absolute=nativeHDR||pattern==4; // values already in 80-nit units, not SDR-white units
 float white=state.w>.5?options.y/(absolute?80.:200.):(nativeHDR?max(capture.x,.01):1.);
 c=brighten(c,max(extra.x,1),white,state.w>.5&&!absolute?1.:white);
-// Scene-level measurement (menuTexture.w): the linear picture in SDR-white units, before the
-// bright-scene limit, so the presenter can see how much light the panel is being asked for.
-if(menuTexture.w>.5)return float4(nativeHDR?c/max(capture.x,.01):c,1);
-// Bright-scene limit (menuTexture.z, 0 = none): eases a mostly-white picture back before the panel's
-// own power limiter dims it abruptly.
-if(menuTexture.z>0)c*=menuTexture.z;
+// Measurement pass (menuTexture.w < 0): the linear picture in SDR-white units, before the bright-area limit.
+if(menuTexture.w<0)return float4(nativeHDR?c/max(capture.x,.01):c,1);
+// Bright-area limit (menuTexture.z = compression a > 0, menuTexture.w = knee). An OLED spends power on
+// every subpixel it lights, so an area's load is the mean of its linear R, G and B, not its perceived
+// luminance (a blue sky drives the panel far harder than it looks). Areas below the knee are untouched;
+// above it the load is rescaled to knee + d/(1+a*d), d = load - knee: smooth at the knee and strictly
+// increasing, so brighter areas stay brighter than dimmer ones, only compressed. Each pixel is scaled
+// by its area's factor, which keeps gradients and colour. The presenter picks a so the frame's mean
+// load stays within the limit.
+if(menuTexture.z>0){float3 a=areaMap.SampleLevel(imageSampler,input.uv,0).rgb;float load=(a.r+a.g+a.b)/3;float d=load-menuTexture.w;
+    if(d>0)c*=(menuTexture.w+d/(1+menuTexture.z*d))/load;}
 if(band.z>.5)c=lerp(c,float3(.85,.85,.85),phaseLabel(uv,band.w));
 if(preview)c=lerp(c,float3(.1,.8,.7),previewLabel(input.uv));
 // Native HDR/scRGB source values already use 80 nits per unit.

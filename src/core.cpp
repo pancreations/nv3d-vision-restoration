@@ -363,6 +363,7 @@ void validate(const Settings& s) {
     if(!std::isfinite(s.convergence) || std::abs(s.convergence) > .05f) throw std::runtime_error("Convergence must be between -5% and +5% of the eye image width.");
     if(!std::isfinite(s.peakNits) || s.peakNits < 80 || s.peakNits > 2000) throw std::runtime_error("Invalid HDR peak target.");
     if(!std::isfinite(s.imageGain) || s.imageGain < 1 || s.imageGain > 8) throw std::runtime_error("Image brightness must be between 1x and 8x.");
+    if(!std::isfinite(s.brightLimit) || s.brightLimit < .2f || s.brightLimit > maxBrightLimit) throw std::runtime_error("Bright scene limit must be between 20 and 65 %.");
     if(!std::isfinite(s.rightOffsetUs) || std::abs(s.rightOffsetUs) > 2000) throw std::runtime_error("Right eye offset must stay within 2000 us.");
     if(!std::isfinite(s.bandHeight) || s.bandHeight < .1f || s.bandHeight > 1) throw std::runtime_error("Stereo area height must be between 10% and 100% of the output.");
     if(s.captureMethod!=CaptureMethod::DesktopDuplication&&s.captureMethod!=CaptureMethod::WindowsGraphicsCapture)throw std::runtime_error("Invalid capture method.");
@@ -444,7 +445,7 @@ void saveProfile(const std::filesystem::path& path, const Settings& s) {
       << "\ndepth " << s.depth << "\nconvergence " << s.convergence << "\noffset " << s.rightOffsetUs << "\npeak " << s.peakNits << "\nglasses " << s.glassesConfirmed << "\neyes " << s.eyeConfirmed << "\nvalidated " << s.validated
       << "\nband " << s.bandHeight << "\nband_center " << s.bandCenter << "\npanel_response " << s.panelResponseUs << "\npanel_scan " << s.panelScanUs
       << "\nillumination " << int(s.illumination) << "\nstrobe_start " << s.strobeStartUs << "\nstrobe_length " << s.strobeLengthUs << "\nscan_start " << s.scanStartUs
-      << "\ngain " << s.imageGain << "\npanel_rise " << s.panelRiseUs << "\npanel_kind " << int(s.panelKind) << "\nblack_floor " << s.blackFloor << "\ncancel " << s.cancelCrosstalk << "\ncancel_strength " << s.cancelStrength << '\n';
+      << "\ngain " << s.imageGain << "\nbright_limit " << s.brightLimit << "\npanel_rise " << s.panelRiseUs << "\npanel_kind " << int(s.panelKind) << "\nblack_floor " << s.blackFloor << "\ncancel " << s.cancelCrosstalk << "\ncancel_strength " << s.cancelStrength << '\n';
     f << "guard_level " << s.guardLevel << '\n';
     if(s.lcd.enabled) {
         const auto& t=s.lcd;
@@ -505,6 +506,7 @@ Settings loadProfile(const std::filesystem::path& path) {
         else if(key=="strobe_length") f>>s.strobeLengthUs;
         else if(key=="scan_start") f>>s.scanStartUs;
         else if(key=="gain") f>>s.imageGain;
+        else if(key=="bright_limit"){f>>s.brightLimit;s.brightLimit=std::clamp(s.brightLimit,.2f,maxBrightLimit);}
         else if(key=="panel_rise") f>>s.panelRiseUs;
         else if(key=="panel_kind") {int v=-1;f>>v;s.panelKind=PanelKind(v);}
         else if(key=="black_floor") f>>s.blackFloor;

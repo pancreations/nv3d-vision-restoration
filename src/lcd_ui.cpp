@@ -84,6 +84,7 @@ bool drawImageControls(Settings& s,bool hdrAvailable,bool aiDesktop) {
     ImGui::SetNextItemWidth(-1);
     changed|=ImGui::SliderFloat("##brightness",&s.imageGain,1,8,"Image brightness %.2fx",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(s.hdr?"Brightens the presented image using HDR headroom; highlights roll off into the display's peak. Ctrl+click to type.":"Brightens the presented image; highlights roll off into white instead of clipping. Ctrl+click to type.");
+    {float limit=s.brightLimit*100;ImGui::SetNextItemWidth(-1);if(ImGui::SliderFloat("##bright_limit",&limit,20,maxBrightLimit*100,"Bright scene limit %.0f %%",ImGuiSliderFlags_AlwaysClamp)){s.brightLimit=limit/100;changed=true;}if(ImGui::IsItemHovered())ImGui::SetTooltip("How much light large bright areas (sky, snow, a white page) may use. Only the brightest areas are held back; darker areas and small highlights keep their full level. 65 %% is the maximum; lower it if bright scenes misbehave on your display.");}
     ImGui::BeginDisabled(!s.hdr);ImGui::SetNextItemWidth(-1);
     changed|=ImGui::SliderFloat("##highlights",&s.peakNits,80,1000,"HDR highlights %.0f nits",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Peak brightness of the HDR brightness test pattern.");

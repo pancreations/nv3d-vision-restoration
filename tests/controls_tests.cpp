@@ -35,21 +35,22 @@ int main(){try{
     // An invalid LCD draft must not disable independent image controls.
     s.lcd.enabled=true;s.lcd.settleUs=8000;s.lcd.durationUs=8000;const auto lcd=s.lcd;
     s.imageGain=1;imageSlider(0);require(s.imageGain>1&&s.lcd==lcd,"pending LCD timing cannot block brightness");
-    imageSlider(2);require(s.blackFloor>0&&s.lcd==lcd,"black-level slider must affect image only");
-    click(40,imageOrigin.y+row*3+half);require(s.blackFloor<0&&s.lcd==lcd,"black-level slider left of center must darken blacks");
-    click(350,imageOrigin.y+row*3+half);require(std::abs(s.blackFloor)<.01f,"black-level slider center leaves black unchanged");
-    imageSlider(3);require(s.depth!=Settings{}.depth&&s.lcd==lcd,"depth slider remains accessible");
-    imageSlider(4);require(s.convergence!=0&&s.lcd==lcd,"convergence remains accessible for any input");
-    imageSlider(1);require(s.peakNits==400,"HDR highlights disabled in SDR");
+    const auto gain=s.imageGain;s.brightLimit=.2f;imageSlider(1);require(s.brightLimit>.2f&&s.brightLimit<=maxBrightLimit&&s.imageGain==gain&&s.phaseUs==phase&&s.leftUs==shutter&&s.lcd==lcd,"bright scene limit must affect the image only and stay within its maximum");
+    imageSlider(3);require(s.blackFloor>0&&s.lcd==lcd,"black-level slider must affect image only");
+    click(40,imageOrigin.y+row*4+half);require(s.blackFloor<0&&s.lcd==lcd,"black-level slider left of center must darken blacks");
+    click(350,imageOrigin.y+row*4+half);require(std::abs(s.blackFloor)<.01f,"black-level slider center leaves black unchanged");
+    imageSlider(4);require(s.depth!=Settings{}.depth&&s.lcd==lcd,"depth slider remains accessible");
+    imageSlider(5);require(s.convergence!=0&&s.lcd==lcd,"convergence remains accessible for any input");
+    imageSlider(2);require(s.peakNits==400,"HDR highlights disabled in SDR");
     // Checkbox follows the section heading on the same line.
     click(imageOrigin.x+ImGui::CalcTextSize("BRIGHTNESS / HDR").x+ImGui::GetStyle().ItemSpacing.x+5,imageOrigin.y+half);
     require(s.hdr,"HDR checkbox must change output setting");
-    imageSlider(1);require(s.peakNits!=400&&s.lcd==lcd,"HDR highlight slider must work without altering timing");
+    imageSlider(2);require(s.peakNits!=400&&s.lcd==lcd,"HDR highlight slider must work without altering timing");
     hdrAvailable=false;s.hdr=false;frame();
     click(imageOrigin.x+ImGui::CalcTextSize("BRIGHTNESS / HDR").x+ImGui::GetStyle().ItemSpacing.x+5,imageOrigin.y+half);
     require(!s.hdr,"HDR cannot be enabled on an unavailable output");
     aiDesktop=true;const float sceneDepth=s.depth,alignment=s.convergence,oldStrength=s.screen.separation,oldPlane=s.screen.convergence;
-    imageSlider(3);imageSlider(4);
+    imageSlider(4);imageSlider(5);
     require(s.screen.separation!=oldStrength&&s.screen.convergence!=oldPlane,"AI controls must edit the actual generated depth and screen plane");
     require(s.depth==sceneDepth&&s.convergence==alignment,"AI controls must not edit shape depth or add a second alignment");
     mapOnly=true;frame();frame();const auto screen=s.screen;

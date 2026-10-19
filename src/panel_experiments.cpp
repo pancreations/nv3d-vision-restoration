@@ -26,7 +26,7 @@ void applyPanelDrive(Settings& s, PanelDrive drive) {
     case PanelDrive::Preload: next.sequence=Sequence::Repeated; break;
     default: throw std::runtime_error("Unknown panel drive experiment.");
     }
-    next.cancelCrosstalk=false; next.blackFloor=0; next.imageGain=1; next.brightLimit=1;
+    next.cancelCrosstalk=false; next.blackFloor=0; next.imageGain=1;
     next.bandHeight=1; next.bandCenter=.5f; next.rightOffsetUs=0;
     // A starting probe width, not a claim about this panel's response or lens latency.
     next.leftUs=next.rightUs=std::min(1500.,nvidiaMaxShutterUs(sequenceEmitterHz(next.refresh,next.sequence)));
