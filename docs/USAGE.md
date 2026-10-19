@@ -143,7 +143,7 @@ Your glasses keep getting full 3D either way.
 
 ## HDR
 
-**HDR output (experimental)** on Tuning is off by default; start in SDR. HDR needs Windows HDR turned on for that display. Some OLEDs buzz audibly at high HDR brightness. Lowering **Image brightness** reduces it.
+**HDR output (experimental)** on Tuning is off by default; start in SDR. HDR needs Windows HDR turned on for that display.
 
 ## LCD, QLED and Mini-LED monitors
 

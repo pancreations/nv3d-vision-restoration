@@ -47,4 +47,3 @@ Not included, as before: NVIDIA's emitter firmware, the AI depth models and game
 - LCD, QLED and Mini-LED screens still show ghosting between the eyes.
 - Geo11 game fixes are experimental; Resident Evil 2 and Metal Gear Solid V still crash.
 - VRto3D, Wibble Wobble, AI desktop and HDR output haven't been confirmed through the glasses yet.
-- Some OLEDs buzz audibly with HDR at high brightness.
