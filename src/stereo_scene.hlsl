@@ -13,6 +13,17 @@ float3 pq(float3 v){float3 p=pow(saturate(v),1/78.84375);return 125*pow(max(p-.8
 // LightBoost crosstalk cancellation: the other eye's leak for this row of the stereo area, top to
 // bottom, as eight samples from the illumination model (all zero when cancellation is off).
 float leakAt(float y){float s[8]={leak0.x,leak0.y,leak0.z,leak0.w,leak1.x,leak1.y,leak1.z,leak1.w};float f=saturate(y)*7;int i=int(floor(f));int j=min(i+1,7);return lerp(s[i],s[j],f-i);}
+// Image brightness gain with a highlight roll-off. The gain applies in full up to 75 % of the output
+// white; above that the brightest channel follows u/(1+a*u), which keeps the gain's slope at the knee
+// and lands the source's reference white exactly on the output white, so nothing between them
+// collapses into one clipped level. Scaling all channels by the same factor keeps hue.
+float3 brighten(float3 c,float gain,float white,float reference){
+    float m=max(max(c.r,c.g),c.b);float knee=.75*white;float range=white-knee;
+    float top=(gain*reference-knee)/range;
+    if(gain<=1||gain*m<=knee||top<=1)return c*gain;
+    float u=(gain*m-knee)/range;float a=(top-1)/top;
+    return c*((knee+range*u/(1+a*u))/m);
+}
 float box(float2 p,float2 c,float2 r){float2 d=abs(p-c)-r;return 1-step(0,max(d.x,d.y));}
 float glyph(float2 p,int letter){int2 xy=int2(floor(p));if(any(xy<0)||xy.x>=5||xy.y>=7)return 0;uint r[7];
 if(letter==0){r[0]=16;r[1]=16;r[2]=16;r[3]=16;r[4]=16;r[5]=16;r[6]=31;}
@@ -126,12 +137,21 @@ bool black=false;c=eyeColor(uv,eye,pattern,aspect,black);if(black)return float4(
 // Nothing can go below black, which is the one limit of the method.
 {float k=leakAt(uv.y);if(k>0){bool otherBlack=false;float3 o=eyeColor(uv,1-eye,pattern,aspect,otherBlack);if(!otherBlack)c=max(c-k*o,0);}}
 // Brightness compensation for a sequence that lights each eye on fewer refreshes. Applied before
-// the readouts so they keep a fixed brightness, and never to a black frame.
-c*=max(extra.x,1);
+// the readouts so they keep a fixed brightness, and never to a black frame. The top of the range
+// rolls off into the output's white instead of clipping, so bright skies keep their gradients.
+bool nativeHDR=pattern==3&&source.y>.5;
+bool absolute=nativeHDR||pattern==4; // values already in 80-nit units, not SDR-white units
+float white=state.w>.5?options.y/(absolute?80.:200.):(nativeHDR?max(capture.x,.01):1.);
+c=brighten(c,max(extra.x,1),white,state.w>.5&&!absolute?1.:white);
+// Scene-level measurement (menuTexture.w): the linear picture in SDR-white units, before the
+// bright-scene limit, so the presenter can see how much light the panel is being asked for.
+if(menuTexture.w>.5)return float4(nativeHDR?c/max(capture.x,.01):c,1);
+// Bright-scene limit (menuTexture.z, 0 = none): eases a mostly-white picture back before the panel's
+// own power limiter dims it abruptly.
+if(menuTexture.z>0)c*=menuTexture.z;
 if(band.z>.5)c=lerp(c,float3(.85,.85,.85),phaseLabel(uv,band.w));
 if(preview)c=lerp(c,float3(.1,.8,.7),previewLabel(input.uv));
 // Native HDR/scRGB source values already use 80 nits per unit.
-bool nativeHDR=pattern==3&&source.y>.5;
 // LCD black floor (extra.y, fraction of the panel drive): the eye image never asks the liquid
 // crystal for full black; the black frames still do (they returned 0 above), so a bright pixel is
 // pulled down as hard as possible and only has to reach the floor before the shutter opens.

@@ -21,7 +21,7 @@ inline Settings steadyViewSettings(const Settings& s){
     Settings v=s;
     v.bandHeight=1;v.bandCenter=.5f;  // the whole picture, never the stereo band
     v.convergence=0;                  // the per-eye shift has no meaning for a single eye
-    v.imageGain=1;v.blackFloor=0;v.guardLevel=0;
+    v.imageGain=1;v.brightLimit=1;v.blackFloor=0;v.guardLevel=0;
     v.cancelCrosstalk=false;v.leakProfile.fill(0.f);
     v.sequence=Sequence::Alternating; // this window has no black slots to fill
     v.swapEyes=false;                 // the eye is chosen here, not swapped by the panel calibration

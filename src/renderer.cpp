@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iomanip>
 #include <numeric>
+#include <cmath>
 
 namespace vision {
 Surface::~Surface(){target.Reset();swap.Reset();if(waitable)CloseHandle(waitable);}
@@ -87,12 +88,53 @@ struct DrawState {
     // The control menu drawn into eye frames (see Presenter::showMenu): its image, its rectangle in
     // output UV and the part of the image it fills.
     ComPtr<ID3D11ShaderResourceView> menuView;float menuRect[4]{},menuTexture[2]{1,1};
+    // Bright-scene limit (Settings::brightLimit). Each new pair's left eye is drawn once, in linear
+    // light, into a small float target whose mip chain averages it to one pixel; that pixel is read
+    // back a few frames later without waiting, and sceneScale follows it: down within about 80 ms so
+    // it leads the panel's own power limiter, back up over about a second so it never pumps.
+    static constexpr UINT meterWidth=128,meterHeight=72,meterMips=8;
+    ComPtr<ID3D11Texture2D> meter;ComPtr<ID3D11RenderTargetView> meterTarget;ComPtr<ID3D11ShaderResourceView> meterView;
+    std::array<ComPtr<ID3D11Texture2D>,4> meterRead;unsigned meterWritten=0,meterConsumed=0;
+    bool measuring=false;float sceneLevel=0,sceneScale=1;double sceneTime=0;
     ~DrawState(){release();}
     void release(){view.Reset();opened.Reset();if(key){key->ReleaseSync(0);key.Reset();}active.reset();}
     void init(ID3D11Device* device){
         check(device->CreateVertexShader(compiled::vs,sizeof(compiled::vs),nullptr,&vs),"Vertex shader");
         check(device->CreatePixelShader(compiled::ps,sizeof(compiled::ps),nullptr,&ps),"Pixel shader");
         D3D11_BUFFER_DESC b{};b.ByteWidth=176;b.Usage=D3D11_USAGE_DYNAMIC;b.BindFlags=D3D11_BIND_CONSTANT_BUFFER;b.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;check(device->CreateBuffer(&b,nullptr,&params),"Shader parameters");D3D11_SAMPLER_DESC s{};s.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;s.AddressU=s.AddressV=s.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;s.MaxLOD=D3D11_FLOAT32_MAX;check(device->CreateSamplerState(&s,&sampler),"Image sampler");
+        D3D11_TEXTURE2D_DESC m{};m.Width=meterWidth;m.Height=meterHeight;m.MipLevels=meterMips;m.ArraySize=1;m.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;m.SampleDesc.Count=1;m.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;m.MiscFlags=D3D11_RESOURCE_MISC_GENERATE_MIPS;
+        check(device->CreateTexture2D(&m,nullptr,&meter),"Scene level target");check(device->CreateRenderTargetView(meter.Get(),nullptr,&meterTarget),"Scene level view");check(device->CreateShaderResourceView(meter.Get(),nullptr,&meterView),"Scene level mips");
+        D3D11_TEXTURE2D_DESC r{};r.Width=r.Height=r.MipLevels=r.ArraySize=r.SampleDesc.Count=1;r.Format=m.Format;r.Usage=D3D11_USAGE_STAGING;r.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        for(auto& t:meterRead)check(device->CreateTexture2D(&r,nullptr,&t),"Scene level readback");
+    }
+    // Draws the eye picture once into the meter (the caller rebinds its own target afterwards).
+    void measure(ID3D11DeviceContext* context,const Settings& s,Eye eye,int pattern,double time){
+        if(meterWritten-meterConsumed>=meterRead.size())return;
+        auto* rt=meterTarget.Get();context->OMSetRenderTargets(1,&rt,nullptr);D3D11_VIEWPORT vp{0,0,float(meterWidth),float(meterHeight),0,1};context->RSSetViewports(1,&vp);
+        measuring=true;draw(context,meterWidth,meterHeight,s,eye,false,pattern,time);measuring=false;
+        ID3D11RenderTargetView* none=nullptr;context->OMSetRenderTargets(1,&none,nullptr);
+        context->GenerateMips(meterView.Get());
+        context->CopySubresourceRegion(meterRead[meterWritten%meterRead.size()].Get(),0,0,0,0,meter.Get(),meterMips-1,nullptr);++meterWritten;
+    }
+    // Collects finished measurements without waiting and moves sceneScale toward the limit.
+    void followScene(ID3D11DeviceContext* context,const Settings& s,double now){
+        while(meterConsumed<meterWritten){
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if(context->Map(meterRead[meterConsumed%meterRead.size()].Get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&mapped)!=S_OK)break;
+            uint16_t h[4];memcpy(h,mapped.pData,sizeof(h));context->Unmap(meterRead[meterConsumed%meterRead.size()].Get(),0);++meterConsumed;
+            const float r=halfToFloat(h[0]),g=halfToFloat(h[1]),b=halfToFloat(h[2]);
+            sceneLevel=std::max(0.f,.2126f*r+.7152f*g+.0722f*b);
+        }
+        const float target=s.brightLimit>=.999f||sceneLevel<=s.brightLimit?1.f:s.brightLimit/sceneLevel;
+        const double dt=sceneTime>0?std::clamp(now-sceneTime,0.,.25):0;sceneTime=now;
+        sceneScale+=float((target-sceneScale)*(1-std::exp(-dt/(target<sceneScale?.08:1.))));
+    }
+    static float halfToFloat(uint16_t h){
+        const uint32_t sign=uint32_t(h&0x8000)<<16;int exponent=(h>>10)&31;uint32_t mantissa=h&1023;uint32_t bits;
+        if(exponent==0){if(!mantissa)bits=sign;else{exponent=1;while(!(mantissa&1024)){mantissa<<=1;--exponent;}mantissa&=1023;bits=sign|uint32_t(exponent+112)<<23|mantissa<<13;}}
+        else if(exponent==31)bits=sign|0x7f800000|mantissa<<13;
+        else bits=sign|uint32_t(exponent+112)<<23|mantissa<<13;
+        float f;memcpy(&f,&bits,sizeof(f));return f;
     }
     bool accept(ID3D11Device* device,std::shared_ptr<StereoFrame> f){if(!f)return false;if(active && f->pairId==active->pairId && f==active)return true;
         Opened* entry=nullptr;for(auto& o:pool)if(o.frame==f.get()&&o.owner.lock()==f){entry=&o;break;}
@@ -113,7 +155,9 @@ struct DrawState {
         p[3]=float(refreshIndex%256);p[22]=guardSlot?1.f:0.f;p[23]=s.guardLevel;
         p[32]=1;p[34]=pqOutput&&s.hdr?1.f:0.f;
         // Only eye slots carry the menu; decided before a missing source turns the slot black.
-        p[35]=menuView&&eye!=Eye::Black?1.f:0.f;for(int i=0;i<4;++i)p[36+i]=menuRect[i];p[40]=menuTexture[0];p[41]=menuTexture[1];
+        p[35]=menuView&&eye!=Eye::Black&&!measuring?1.f:0.f;for(int i=0;i<4;++i)p[36+i]=menuRect[i];p[40]=menuTexture[0];p[41]=menuTexture[1];
+        // Bright-scene limit: only the captured picture in the stereo output is eased back.
+        p[42]=!measuring&&!preview&&pattern==3&&s.brightLimit<.999f?sceneScale:0;p[43]=measuring?1.f:0.f;
         if(pattern==3 && active){p[12]=float(int(active->packing));p[13]=float(int(active->encoding));p[14]=float(active->width);p[15]=float(active->height);p[32]=active->sdrWhiteLevel;p[33]=active->eyeAspect;if(active->alignmentApplied)p[10]=0;}
         else if(pattern==3)p[4]=float(int(Eye::Black));
         D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(params.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped),"Map shader constants");memcpy(mapped.pData,p,sizeof(p));context->Unmap(params.Get(),0);
@@ -275,7 +319,8 @@ void Presenter::run(std::stop_token stop,HWND window,Display display,bool previe
             // Do not consume ordered source pairs during pause or acquisition
             // blanking: no eye image is being submitted in those slots.
             const double sourceBegin=qpc();
-            if(slot.pairBoundary&&!mute){auto next=source_.forPresentation();if(draw.accept(surface.device.Get(),next))source_.presented(next);pairTime=qpc()-begin;}
+            if(slot.pairBoundary&&!mute){auto next=source_.forPresentation();const uint64_t before=draw.active?draw.active->pairId:0;if(draw.accept(surface.device.Get(),next)){source_.presented(next);if(pattern==3&&!preview&&s.brightLimit<.999f&&draw.active->pairId!=before)draw.measure(surface.context.Get(),s,Eye::Left,pattern,pairTime);}pairTime=qpc()-begin;}
+            draw.followScene(surface.context.Get(),s,qpc());local.sceneLevel=draw.sceneLevel;local.sceneScale=draw.sceneScale;
             const double sourceEnd=qpc();
             // Opening a new shared texture/view can stall the driver after the
             // initial prediction. Re-select BOTH pixels and shutter deadline
@@ -697,6 +742,41 @@ bool runGpuSelfTest(const std::filesystem::path& directory){
             }
             report<<(hdr?"HDR":"SDR")<<" neutral reset, mute isolation, all nine target rows, refresh-code decode including wrap and guard slots PASS (rendered pixels only)\n";
         }
+    }
+    // Highlight roll-off and the bright-scene limit on a captured picture: a bright gray ramp at 3x
+    // brightness must stay a ramp (a hard clip turned its whole upper part into one white), white must
+    // still reach white, and an all-white picture must measure as white and be eased to the limit.
+    {
+        D3D11_TEXTURE2D_DESC od{};od.Width=160;od.Height=80;od.MipLevels=od.ArraySize=od.SampleDesc.Count=1;od.Format=DXGI_FORMAT_R8G8B8A8_UNORM;od.BindFlags=D3D11_BIND_RENDER_TARGET;
+        ComPtr<ID3D11Texture2D> out,outRead;check(device->CreateTexture2D(&od,nullptr,&out),"Roll-off target");ComPtr<ID3D11RenderTargetView> outView;check(device->CreateRenderTargetView(out.Get(),nullptr,&outView),"Roll-off view");
+        od.BindFlags=0;od.Usage=D3D11_USAGE_STAGING;od.CPUAccessFlags=D3D11_CPU_ACCESS_READ;check(device->CreateTexture2D(&od,nullptr,&outRead),"Roll-off readback");
+        auto useSource=[&](bool white){
+            std::vector<uint32_t> px(16*8);for(size_t n=0;n<px.size();++n){const uint32_t v=white?255:std::min(255u,128u+uint32_t(n%8)*18u+(n%8==7?1u:0u));px[n]=0xff000000u|v<<16|v<<8|v;}
+            D3D11_TEXTURE2D_DESC sd{};sd.Width=16;sd.Height=8;sd.MipLevels=sd.ArraySize=sd.SampleDesc.Count=1;sd.Format=DXGI_FORMAT_R8G8B8A8_UNORM;sd.BindFlags=D3D11_BIND_SHADER_RESOURCE;sd.Usage=D3D11_USAGE_IMMUTABLE;
+            D3D11_SUBRESOURCE_DATA data{px.data(),16*4,0};ComPtr<ID3D11Texture2D> input;check(device->CreateTexture2D(&sd,&data,&input),"Roll-off source");
+            draw.release();check(device->CreateShaderResourceView(input.Get(),nullptr,&draw.view),"Roll-off source view");draw.active=std::make_shared<StereoFrame>();draw.active->packing=Packing::SideBySide;draw.active->encoding=Encoding::SRGB;draw.active->width=16;draw.active->height=8;
+        };
+        auto column=[&](const Settings& s){
+            auto* t=outView.Get();context->OMSetRenderTargets(1,&t,nullptr);D3D11_VIEWPORT v{0,0,160,80,0,1};context->RSSetViewports(1,&v);
+            draw.draw(context.Get(),160,80,s,Eye::Left,false,3,0);context->CopyResource(outRead.Get(),out.Get());D3D11_MAPPED_SUBRESOURCE m{};check(context->Map(outRead.Get(),0,D3D11_MAP_READ,0,&m),"Read roll-off");
+            std::array<int,8> values{};for(int i=0;i<8;++i)values[i]=static_cast<uint8_t*>(m.pData)[40*m.RowPitch+(i*20+10)*4];context->Unmap(outRead.Get(),0);return values;
+        };
+        useSource(false);Settings bright;bright.imageGain=3;bright.brightLimit=1;auto ramp=column(bright);
+        for(int i=1;i<8;++i)if(ramp[i]<=ramp[i-1])throw std::runtime_error("Image brightness flattened a bright gradient instead of rolling it off.");
+        if(ramp[7]<254)throw std::runtime_error("Image brightness roll-off kept white from reaching white.");
+        Settings unity;unity.brightLimit=1;auto plain=column(unity);if(ramp[0]<=plain[0])throw std::runtime_error("Image brightness roll-off removed the gain below the knee.");
+        report<<"SDR highlight roll-off: bright ramp stays distinct at 3x, white reaches white PASS\n";
+        useSource(true);draw.sceneScale=1;draw.sceneLevel=0;draw.sceneTime=0;Settings limited; // the shipped limit
+        draw.measure(context.Get(),limited,Eye::Left,3,0);context->Flush();
+        for(int tries=0;tries<2000&&draw.meterConsumed<draw.meterWritten;++tries){draw.followScene(context.Get(),limited,0);Sleep(1);}
+        if(draw.meterConsumed!=draw.meterWritten||draw.sceneLevel<.95f||draw.sceneLevel>1.05f)throw std::runtime_error("Bright-scene measurement did not read an all-white picture as white.");
+        for(int step=1;step<=40;++step)draw.followScene(context.Get(),limited,step*.05);
+        if(std::abs(draw.sceneScale-maxBrightLimit)>.01f)throw std::runtime_error("Bright-scene limit did not settle at its level.");
+        const int eased=column(limited)[0],full=column(unity)[0];
+        if(!(eased<full-30))throw std::runtime_error("Bright-scene limit did not ease an all-white picture back.");
+        Settings stream=streamViewSettings(limited);if(column(stream)[0]<254)throw std::runtime_error("Bright-scene limit reached the 2D stream view.");
+        report<<"SDR bright-scene limit: white measures "<<draw.sceneLevel<<", eased to "<<eased<<"/255 at the "<<maxBrightLimit*100<<" % limit, stream view untouched PASS\n";
+        draw.release();draw.sceneScale=1;
     }
     // Exercise the actual hook shader and presenter with contrasting packed eyes.
     // The edge pixels detect bilinear sampling across the SBS/TB seam.

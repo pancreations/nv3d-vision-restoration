@@ -83,7 +83,7 @@ bool drawImageControls(Settings& s,bool hdrAvailable,bool aiDesktop) {
         ImGui::SetTooltip("Enable HDR for this display in Windows to use HDR output.");
     ImGui::SetNextItemWidth(-1);
     changed|=ImGui::SliderFloat("##brightness",&s.imageGain,1,8,"Image brightness %.2fx",ImGuiSliderFlags_AlwaysClamp);
-    if(ImGui::IsItemHovered())ImGui::SetTooltip(s.hdr?"Brightens the presented image using HDR headroom. Ctrl+click to type.":"Brightens the presented image; SDR highlights clip at white. Ctrl+click to type.");
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(s.hdr?"Brightens the presented image using HDR headroom; highlights roll off into the display's peak. Ctrl+click to type.":"Brightens the presented image; highlights roll off into white instead of clipping. Ctrl+click to type.");
     ImGui::BeginDisabled(!s.hdr);ImGui::SetNextItemWidth(-1);
     changed|=ImGui::SliderFloat("##highlights",&s.peakNits,80,1000,"HDR highlights %.0f nits",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Peak brightness of the HDR brightness test pattern.");

@@ -35,7 +35,7 @@ Do this once per monitor and refresh rate. Settings save automatically, and **Pr
 
 Picture controls:
 
-- **Image brightness** brightens the 3D picture to make up for the glasses' dark lenses.
+- **Image brightness** brightens the 3D picture to make up for the glasses' dark lenses. Highlights roll smoothly into white, so bright skies keep their detail. Mostly white pictures (snow, a bright sky, a white page) are eased back gently and automatically, so the display never has to dim them abruptly on its own.
 - **Black level** at zero is neutral. Left of zero deepens shadows; right of zero lifts them.
 - **Convergence** shifts the eye images horizontally to move the whole picture nearer or farther.
 
