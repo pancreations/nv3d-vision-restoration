@@ -205,7 +205,7 @@ foreach ($document in @(
     'docs/EMITTER-TIMING-FIX.md', 'docs/EMITTER-STABILITY-2026-10-01.md', 'docs/PRESENTATION-SYNC.md',
     'docs/STEREO-COMPATIBILITY.md', 'docs/DIRECT-EYES.md', 'docs/GPU-LOAD-FLASHING.md',
     'docs/SOURCES.md', 'docs/STATUS.md', 'docs/RELEASE-v0.1.0.md', 'docs/RELEASE-v0.1.1.md',
-    'docs/RELEASE-v0.2.0.md', 'docs/RELEASE-v0.3.0.md',
+    'docs/RELEASE-v0.2.0.md', 'docs/RELEASE-v0.3.0.md', 'docs/RELEASE-v0.3.6.md',
     'docs/SYNC-RECOVERY-2026-10-18.md', 'docs/DEVELOPMENT.md', "docs/RELEASE-v$version.md"
 )) {
     Copy-Required (Join-Path $projectRoot $document) (Join-Path $coreStage $document)

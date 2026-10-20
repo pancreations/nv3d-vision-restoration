@@ -81,7 +81,11 @@ Install the game's community fix from [Helix Mod](https://helixmod.blogspot.com/
 
 More help: [User guide](docs/USAGE.md) · [Emitter setup and troubleshooting](docs/EMITTER.md) · [RP2040 DIY emitter](docs/RP2040.md) · [VRto3D](docs/VRTO3D.md) · [Wibble Wobble](docs/WIBBLE-WOBBLE.md)
 
-## What's new in 0.3.6
+## What's new in 0.3.7
+
+- **Hotfix: the fullscreen menu can be hidden again.** In 0.3.6, **Hide menu** (or the menu shortcut) hid the control window but left its picture stuck on the 3D output.
+
+## What was new in 0.3.6
 
 - **No more flashing under heavy GPU load.** Rendering in Blender's Cycles viewport, or any other GPU-heavy program, used to make the glasses flash black. The output now gets top GPU priority from Windows and stays in sync.
 - More reliable emitter recovery when the display timing shifts.
@@ -89,7 +93,7 @@ More help: [User guide](docs/USAGE.md) · [Emitter setup and troubleshooting](do
 - The black level slider can now darken shadows as well as lift them.
 - HDR is off by default and marked experimental.
 
-Full details are in the [release notes](docs/RELEASE-v0.3.6.md).
+Full details are in the [release notes](docs/RELEASE-v0.3.7.md).
 
 ## Building from source
 

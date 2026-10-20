@@ -1,5 +1,9 @@
 # Implementation and validation status
 
+## Alpha 0.3.7 hotfix, 2026-10-19
+
+- Fullscreen menu: hiding it now removes its image from the stereo output. The 0.3.6 main loop returned early while the control window was hidden and skipped the call that clears the menu from the eye frames, so the menu stayed on screen. See [v0.3.7 release notes](RELEASE-v0.3.7.md).
+
 ## Alpha 0.3.6 release, 2026-10-19
 
 - GPU contention fixed: the presenter's process now requires the REALTIME GPU scheduling class. Under a Cycles OptiX render, HIGH let presenter work wait up to 57 ms (past the 25 ms flip queue, so black slots reached an eye); REALTIME kept it near 1 ms (`experiments/gpu-contention`, [PRESENTATION-SYNC.md](PRESENTATION-SYNC.md)). User-confirmed through the glasses while orbiting a Cycles viewport captured through window capture.

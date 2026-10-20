@@ -1938,6 +1938,8 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             // controls are hidden, without queueing an invisible GPU draw/present
             // alongside the refresh-critical stereo output.
             if(!smoke&&!IsWindowVisible(controlWindow)){
+                // The menu image lives in the presenter, not in the hidden window: take it out of the eye frames.
+                if(menuVersion){presenter.hideMenu();menuVersion=0;}
                 // DXGI may synchronously message an output HWND on this thread.
                 // Wake for those messages instead of sleeping through a refresh.
                 MsgWaitForMultipleObjectsEx(0,nullptr,8,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
